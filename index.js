@@ -288,6 +288,9 @@ client.on('messageCreate', async (message) => {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: history,
+      config: {
+        tools: [{ googleSearch: {} }], // ★これでAIが自分でググって回答できるようになります！
+      },
     });
 
     const replyText = response.text;
