@@ -52,7 +52,7 @@ function createHelpEmbed() {
     .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
     .addFields(
       { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
-      { name: '📁 画像・ファイル解析', value: '画像、動画、テキストファイルなどを添付して話しかけると内容を読み取って回答します！' },
+      { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
       { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
       { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' },
       { name: '📝 アンケートに答える', value: '「`/bot-questionnaire`」コマンドでアンケートにご回答いただけます。' }
@@ -74,7 +74,6 @@ client.once('ready', () => {
 // 4. モーダル ＆ スラッシュコマンド (Interaction) 処理
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
-  // --- A. スラッシュコマンドの受信 ---
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'help') {
       await interaction.reply({ embeds: [createHelpEmbed()] });
@@ -128,7 +127,6 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // --- B. モーダル送信の受信 ---
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_bot_question') {
       const content = interaction.fields.getTextInputValue('question_content');
@@ -194,16 +192,13 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // メンション記号（ユーザー/ロール/チャンネル）を綺麗に除去
   const prompt = message.content.replace(/<@[!&]?\d+>/g, '').replace(/<#\d+>/g, '').trim();
 
-  // チャットで直接「help」や「ヘルプ」と送られてきた場合も対応
   if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
     await message.reply({ embeds: [createHelpEmbed()] });
     return;
   }
 
-  // 会話用のメンション/リプライチェック
   const isMentioned = message.mentions.has(client.user);
   let isReplyToBot = false;
   if (message.reference && message.reference.messageId) {
@@ -245,36 +240,56 @@ client.on('messageCreate', async (message) => {
     }
     const history = serverHistories.get(contextKey);
 
-    const userParts = [];
-    if (prompt) {
-      userParts.push({ text: prompt });
-    }
+    // ★ 日本時間の現在時刻を取得して文頭に忍ばせる
+    const jstNow = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+    let textContent = `[現在の日本時間: ${jstNow}]\n${prompt}`;
 
+    const userParts = [];
+
+    // 添付ファイルの処理（画像・動画・コード・テキストに対応）
     if (message.attachments.size > 0) {
       for (const [_, attachment] of message.attachments) {
         try {
           const response = await fetch(attachment.url);
-          const arrayBuffer = await response.arrayBuffer();
-          const base64Data = Buffer.from(arrayBuffer).toString('base64');
+          const mimeType = attachment.contentType || '';
 
-          userParts.push({
-            inlineData: {
-              data: base64Data,
-              mimeType: attachment.contentType || 'application/octet-stream',
-            },
-          });
+          // JavaScriptなどのコードファイル・テキストファイルは「テキスト」として読み込む
+          if (
+            mimeType.includes('text') ||
+            mimeType.includes('javascript') ||
+            mimeType.includes('json') ||
+            attachment.name.endsWith('.js') ||
+            attachment.name.endsWith('.txt') ||
+            attachment.name.endsWith('.json')
+          ) {
+            const fileText = await response.text();
+            textContent += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
+          } else {
+            // 画像・動画・音声・PDFなどはバイナリ形式で読み込む
+            const arrayBuffer = await response.arrayBuffer();
+            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+            userParts.push({
+              inlineData: {
+                data: base64Data,
+                mimeType: mimeType || 'application/octet-stream',
+              },
+            });
+          }
         } catch (fileErr) {
           console.error('ファイル読み込みエラー:', fileErr);
         }
       }
     }
 
+    // テキストパートを先頭に追加
+    userParts.unshift({ text: textContent });
+
     history.push({
       role: 'user',
       parts: userParts,
     });
 
-    // ★ 最新の安定モデル gemini-2.5-flash に変更！
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: history,
