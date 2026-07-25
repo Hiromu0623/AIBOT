@@ -1,8 +1,11 @@
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import 'dotenv/config';
 
-// スラッシュコマンド定義
+// スラッシュコマンド定義（help コマンドを追加）
 const commands = [
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Botの使い方やコマンド一覧を表示します'),
   new SlashCommandBuilder()
     .setName('bot-question')
     .setDescription('Botへの質問や提案を送信します（モーダルが開きます）'),
@@ -13,7 +16,6 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
-// ★ Bot の Application ID (Client ID)
 const CLIENT_ID = process.env.CLIENT_ID || '1507941181584052266';
 
 (async () => {
