@@ -240,20 +240,17 @@ client.on('messageCreate', async (message) => {
     }
     const history = serverHistories.get(contextKey);
 
-    // ★ 日本時間の現在時刻を取得して文頭に忍ばせる
     const jstNow = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
     let textContent = `[現在の日本時間: ${jstNow}]\n${prompt}`;
 
     const userParts = [];
 
-    // 添付ファイルの処理（画像・動画・コード・テキストに対応）
     if (message.attachments.size > 0) {
       for (const [_, attachment] of message.attachments) {
         try {
           const response = await fetch(attachment.url);
           const mimeType = attachment.contentType || '';
 
-          // JavaScriptなどのコードファイル・テキストファイルは「テキスト」として読み込む
           if (
             mimeType.includes('text') ||
             mimeType.includes('javascript') ||
@@ -265,7 +262,6 @@ client.on('messageCreate', async (message) => {
             const fileText = await response.text();
             textContent += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
           } else {
-            // 画像・動画・音声・PDFなどはバイナリ形式で読み込む
             const arrayBuffer = await response.arrayBuffer();
             const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
@@ -282,7 +278,6 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // テキストパートを先頭に追加
     userParts.unshift({ text: textContent });
 
     history.push({
@@ -306,8 +301,16 @@ client.on('messageCreate', async (message) => {
       history.splice(0, 2);
     }
 
-    if (replyText.length > 2000) {
-      await message.reply(replyText.slice(0, 1990) + '\n... (長文のため省略)');
+    // ★【修正ポイント】2000文字を超える長文対応（1900文字ずつ分割して送信）
+    if (replyText.length > 1900) {
+      const chunks = replyText.match(/[\s\S]{1,1900}/g) || [replyText];
+      for (let i = 0; i < chunks.length; i++) {
+        if (i === 0) {
+          await message.reply(chunks[i]);
+        } else {
+          await message.channel.send(chunks[i]);
+        }
+      }
     } else {
       await message.reply(replyText);
     }
@@ -345,7 +348,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    await message.reply(`**⚠️ エラーが発生しました**\n\`\`\`js\n${errorStr}\n\`\`\``);
+    await message.reply(`**⚠️ エラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
 
   } finally {
     isProcessing = false;
