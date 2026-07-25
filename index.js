@@ -108,7 +108,6 @@ client.on('interactionCreate', async (interaction) => {
 
   // --- B. モーダル送信の受信 ---
   if (interaction.isModalSubmit()) {
-    // 1. /bot-question の送信処理
     if (interaction.customId === 'modal_bot_question') {
       const content = interaction.fields.getTextInputValue('question_content');
       const userTag = interaction.user.tag;
@@ -132,7 +131,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // 2. /bot-questionnaire の送信処理
     if (interaction.customId === 'modal_bot_questionnaire') {
       const q1 = interaction.fields.getTextInputValue('q1_content');
       const q2 = interaction.fields.getTextInputValue('q2_content');
@@ -176,8 +174,8 @@ client.on('messageCreate', async (message) => {
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
 
-  // --- A. help コマンド ---
-  if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
+  // ★1. 【修正】ヘルプ判定をメンション判定より前に配置（メンションの有無に関わらず反応）
+  if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ' || message.content.includes('help')) {
     const helpEmbed = new EmbedBuilder()
       .setTitle('📖 AI Bot ヘルプ & 使い方ガイド')
       .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
@@ -195,7 +193,7 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // メンションまたはBotへの返信かを判定
+  // ★2. 会話用のメンション/リプライチェック
   const isMentioned = message.mentions.has(client.user);
   let isReplyToBot = false;
   if (message.reference && message.reference.messageId) {
@@ -266,7 +264,6 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-    // ★モデルを gemini-1.5-flash に設定
     const response = await ai.models.generateContent({
       model: 'gemini-1.5-flash',
       contents: history,
