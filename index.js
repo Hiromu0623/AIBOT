@@ -76,13 +76,11 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   // --- A. スラッシュコマンドの受信 ---
   if (interaction.isChatInputCommand()) {
-    // /help コマンド
     if (interaction.commandName === 'help') {
       await interaction.reply({ embeds: [createHelpEmbed()] });
       return;
     }
 
-    // /bot-question コマンド
     if (interaction.commandName === 'bot-question') {
       const modal = new ModalBuilder()
         .setCustomId('modal_bot_question')
@@ -97,7 +95,6 @@ client.on('interactionCreate', async (interaction) => {
       modal.addComponents(new ActionRowBuilder().addComponents(questionInput));
       await interaction.showModal(modal);
     } 
-    // /bot-questionnaire コマンド
     else if (interaction.commandName === 'bot-questionnaire') {
       const modal = new ModalBuilder()
         .setCustomId('modal_bot_questionnaire')
@@ -197,7 +194,8 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
+  // メンション記号（ユーザー/ロール/チャンネル）を綺麗に除去
+  const prompt = message.content.replace(/<@[!&]?\d+>/g, '').replace(/<#\d+>/g, '').trim();
 
   // チャットで直接「help」や「ヘルプ」と送られてきた場合も対応
   if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
@@ -276,11 +274,12 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-// 280行目付近
-const response = await ai.models.generateContent({
-  model: 'gemini-2.5-flash',
-  contents: history,
-});
+    // ★ 最新の安定モデル gemini-2.5-flash に変更！
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: history,
+    });
+
     const replyText = response.text;
 
     history.push({
