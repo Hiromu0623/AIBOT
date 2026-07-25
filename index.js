@@ -276,11 +276,11 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-    // ⭕️ 修正後のコード
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: history,
-    });
+   // 280行目付近
+const response = await ai.models.generateContent({
+  model: 'gemini-2.5-flash-lite',
+  contents: history,
+});
     const replyText = response.text;
 
     history.push({
