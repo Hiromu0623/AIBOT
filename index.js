@@ -276,9 +276,9 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-   // 280行目付近
+// 280行目付近
 const response = await ai.models.generateContent({
-  model: 'gemini-2.5-flash-lite',
+  model: 'gemini-2.5-flash',
   contents: history,
 });
     const replyText = response.text;
