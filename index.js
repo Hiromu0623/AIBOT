@@ -45,12 +45,28 @@ const MAX_HISTORY = 10;
 // 処理中フラグ（連続呼び出し防止用）
 let isProcessing = false;
 
+// 共通ヘルプEmbed生成関数
+function createHelpEmbed() {
+  return new EmbedBuilder()
+    .setTitle('📖 AI Bot ヘルプ & 使い方ガイド')
+    .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
+    .addFields(
+      { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
+      { name: '📁 画像・ファイル解析', value: '画像、動画、テキストファイルなどを添付して話しかけると内容を読み取って回答します！' },
+      { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
+      { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' },
+      { name: '📝 アンケートに答える', value: '「`/bot-questionnaire`」コマンドでアンケートにご回答いただけます。' }
+    )
+    .setColor('#5865F2')
+    .setFooter({ text: 'サーバーごとに独立した会話記憶を保持しています' });
+}
+
 // -------------------------------------------------------------
 // 3. Ready イベント（ログイン & ステータス設定）
 // -------------------------------------------------------------
 client.once('ready', () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
-  client.user.setActivity('help で使い方を表示', { type: ActivityType.Playing });
+  client.user.setActivity('/help で使い方を表示', { type: ActivityType.Playing });
   console.log('✅ Botが正常に起動しました！');
 });
 
@@ -60,6 +76,13 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   // --- A. スラッシュコマンドの受信 ---
   if (interaction.isChatInputCommand()) {
+    // /help コマンド
+    if (interaction.commandName === 'help') {
+      await interaction.reply({ embeds: [createHelpEmbed()] });
+      return;
+    }
+
+    // /bot-question コマンド
     if (interaction.commandName === 'bot-question') {
       const modal = new ModalBuilder()
         .setCustomId('modal_bot_question')
@@ -73,7 +96,9 @@ client.on('interactionCreate', async (interaction) => {
 
       modal.addComponents(new ActionRowBuilder().addComponents(questionInput));
       await interaction.showModal(modal);
-    } else if (interaction.commandName === 'bot-questionnaire') {
+    } 
+    // /bot-questionnaire コマンド
+    else if (interaction.commandName === 'bot-questionnaire') {
       const modal = new ModalBuilder()
         .setCustomId('modal_bot_questionnaire')
         .setTitle('Botアンケート');
@@ -167,33 +192,20 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // -------------------------------------------------------------
-// 5. 通常メッセージ処理（会話、ヘルプ、画像/ファイル解析）
+// 5. 通常メッセージ処理（会話、通常チャットのhelp、画像/ファイル解析）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
 
-  // ★1. 【修正】ヘルプ判定をメンション判定より前に配置（メンションの有無に関わらず反応）
-  if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ' || message.content.includes('help')) {
-    const helpEmbed = new EmbedBuilder()
-      .setTitle('📖 AI Bot ヘルプ & 使い方ガイド')
-      .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
-      .addFields(
-        { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
-        { name: '📁 画像・ファイル解析', value: '画像、動画、テキストファイルなどを添付して話しかけると内容を読み取って回答します！' },
-        { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
-        { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' },
-        { name: '📝 アンケートに答える', value: '「`/bot-questionnaire`」コマンドでアンケートにご回答いただけます。' }
-      )
-      .setColor('#5865F2')
-      .setFooter({ text: 'サーバーごとに独立した会話記憶を保持しています' });
-
-    await message.reply({ embeds: [helpEmbed] });
+  // チャットで直接「help」や「ヘルプ」と送られてきた場合も対応
+  if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
+    await message.reply({ embeds: [createHelpEmbed()] });
     return;
   }
 
-  // ★2. 会話用のメンション/リプライチェック
+  // 会話用のメンション/リプライチェック
   const isMentioned = message.mentions.has(client.user);
   let isReplyToBot = false;
   if (message.reference && message.reference.messageId) {
