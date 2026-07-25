@@ -42,9 +42,8 @@ const client = new Client({
 });
 
 // サーバー（Guild）ごとの会話記憶用 Map
-// 形式: serverHistories.get(guildId) -> [{ role, parts }]
 const serverHistories = new Map();
-const MAX_HISTORY = 10; // 保持する最大ターン数
+const MAX_HISTORY = 10;
 
 // 処理中フラグ（連続呼び出し防止用）
 let isProcessing = false;
@@ -70,11 +69,14 @@ client.once('ready', async () => {
   // ステータス（アクティビティ）設定
   client.user.setActivity('help で使い方を表示', { type: ActivityType.Playing });
 
-  // スラッシュコマンドの登録
+  // スラッシュコマンドの登録処理
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     console.log('🔄 スラッシュコマンドを登録中...');
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    await rest.put(
+      Routes.applicationCommands(client.application.id),
+      { body: commands }
+    );
     console.log('✅ スラッシュコマンドの登録完了！');
   } catch (error) {
     console.error('❌ スラッシュコマンド登録エラー:', error);
@@ -100,9 +102,7 @@ client.on('interactionCreate', async (interaction) => {
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true);
 
-      const firstActionRow = new ActionRowBuilder().addComponents(questionInput);
-      modal.addComponents(firstActionRow);
-
+      modal.addComponents(new ActionRowBuilder().addComponents(questionInput));
       await interaction.showModal(modal);
     } else if (interaction.commandName === 'bot-questionnaire') {
       const modal = new ModalBuilder()
@@ -146,7 +146,6 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true });
 
-      // 作者へDM送信
       try {
         const author = await client.users.fetch(AUTHOR_ID);
         const embed = new EmbedBuilder()
@@ -173,14 +172,12 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({ content: 'アンケートへのご協力ありがとうございました！感謝メッセージをDMでお送りしました。', ephemeral: true });
 
-      // 回答者へお礼DM送信
       try {
         await interaction.user.send('🌟 **アンケートにご協力いただきありがとうございました！**\n頂いたご意見・ご提案は今後の改善に役立てさせていただきます！');
       } catch (e) {
         console.error('ユーザーへのDM送信失敗:', e);
       }
 
-      // 作者へDM送信
       try {
         const author = await client.users.fetch(AUTHOR_ID);
         const embed = new EmbedBuilder()
@@ -251,10 +248,8 @@ client.on('messageCreate', async (message) => {
   try {
     isProcessing = true;
 
-    // サーバー識別（DMの場合はユーザーID）
     const contextKey = message.guild ? `guild_${message.guild.id}` : `dm_${message.author.id}`;
 
-    // 記憶リセット処理
     if (prompt === 'リセット' || prompt === 'forget') {
       serverHistories.delete(contextKey);
       await message.reply('🧠 このサーバーでの会話の記憶をリセットしました！');
@@ -268,13 +263,11 @@ client.on('messageCreate', async (message) => {
 
     await message.channel.sendTyping();
 
-    // サーバーごとの記憶取得
     if (!serverHistories.has(contextKey)) {
       serverHistories.set(contextKey, []);
     }
     const history = serverHistories.get(contextKey);
 
-    // 添付ファイル（画像、動画、テキスト等）の取得処理
     const userParts = [];
     if (prompt) {
       userParts.push({ text: prompt });
@@ -304,9 +297,9 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-    // Gemini API 呼び出し
+    // ★ モデルを gemini-2.0-flash に変更
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.0-flash',
       contents: history,
     });
 
@@ -317,12 +310,10 @@ client.on('messageCreate', async (message) => {
       parts: [{ text: replyText }],
     });
 
-    // 記憶上限オーバー分を削除
     if (history.length > MAX_HISTORY * 2) {
       history.splice(0, 2);
     }
 
-    // メッセージ送信
     if (replyText.length > 2000) {
       await message.reply(replyText.slice(0, 1990) + '\n... (長文のため省略)');
     } else {
@@ -336,7 +327,6 @@ client.on('messageCreate', async (message) => {
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
     const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
-    // 503 エラー
     if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE')) {
       await message.reply(
         `⚠️ **Gemini サーバー混雑エラー (503)**\n` +
@@ -347,7 +337,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 429 エラー
     if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
       let retryTime = '不明（少し待ってからお試しください）';
       const retryMatch = errorStr.match(/"retryDelay"\s*:\s*"([^"]+)"/) || errorStr.match(/Please retry in ([^\s]+)/);
