@@ -2,9 +2,6 @@ import http from 'http';
 import {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
   ActionRowBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -49,44 +46,16 @@ const MAX_HISTORY = 10;
 let isProcessing = false;
 
 // -------------------------------------------------------------
-// 3. スラッシュコマンド定義
+// 3. Ready イベント（ログイン & ステータス設定）
 // -------------------------------------------------------------
-const commands = [
-  new SlashCommandBuilder()
-    .setName('bot-question')
-    .setDescription('Botへの質問や提案を送信します（モーダルが開きます）'),
-  new SlashCommandBuilder()
-    .setName('bot-questionnaire')
-    .setDescription('Botに関するアンケートに回答します（モーダルが開きます）'),
-].map(command => command.toJSON());
-
-// -------------------------------------------------------------
-// 4. Ready イベント（ログイン & ステータス設定 & コマンド登録）
-// -------------------------------------------------------------
-client.once('ready', async () => {
+client.once('ready', () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
-
-  // ステータス（アクティビティ）設定
   client.user.setActivity('help で使い方を表示', { type: ActivityType.Playing });
-
-  // スラッシュコマンドの登録処理
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  try {
-    console.log('🔄 スラッシュコマンドを登録中...');
-    await rest.put(
-      Routes.applicationCommands(client.application.id),
-      { body: commands }
-    );
-    console.log('✅ スラッシュコマンドの登録完了！');
-  } catch (error) {
-    console.error('❌ スラッシュコマンド登録エラー:', error);
-  }
-
   console.log('✅ Botが正常に起動しました！');
 });
 
 // -------------------------------------------------------------
-// 5. モーダル ＆ スラッシュコマンド (Interaction) 処理
+// 4. モーダル ＆ スラッシュコマンド (Interaction) 処理
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   // --- A. スラッシュコマンドの受信 ---
@@ -200,7 +169,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // -------------------------------------------------------------
-// 6. 通常メッセージ処理（会話、ヘルプ、画像/ファイル解析）
+// 5. 通常メッセージ処理（会話、ヘルプ、画像/ファイル解析）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -297,9 +266,9 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
-    // ★ モデルを gemini-2.0-flash に変更
+    // ★モデルを gemini-1.5-flash に設定
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       contents: history,
     });
 
