@@ -8,6 +8,7 @@ import {
   TextInputStyle,
   EmbedBuilder,
   ActivityType,
+  ChannelType,
 } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
@@ -28,6 +29,10 @@ http.createServer((req, res) => {
 // -------------------------------------------------------------
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
+// ★お知らせ配信の制御設定
+const EXCLUDED_GUILD_ID = '1470380389561405554'; // 除外対象のサーバーID
+const ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT = false; // trueにすると除外サーバーにも送る / falseだと送らない
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const client = new Client({
   intents: [
@@ -42,8 +47,27 @@ const client = new Client({
 const serverHistories = new Map();
 const MAX_HISTORY = 10;
 
+// APIレート制限計算用（1分間あたりのリクエスト履歴）
+const requestTimestamps = [];
+const GEMINI_RPM_LIMIT = 15; // Gemini API Free Tier (Flash) の1分間あたりの制限回数
+
 // 処理中フラグ（連続呼び出し防止用）
 let isProcessing = false;
+
+// ★ステータス（アクティビティ）の更新関数
+function updateBotStatus() {
+  const now = Date.now();
+  // 1分(60,000ミリ秒)以上前の古い記録を削除
+  while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
+    requestTimestamps.shift();
+  }
+
+  const serverCount = client.guilds.cache.size;
+  const remainingRequests = Math.max(0, GEMINI_RPM_LIMIT - requestTimestamps.length);
+
+  const statusText = `導入サーバー数 : ${serverCount} | 残り回答制限数 : ${remainingRequests}`;
+  client.user.setActivity(statusText, { type: ActivityType.Custom });
+}
 
 // 共通ヘルプEmbed生成関数
 function createHelpEmbed() {
@@ -53,6 +77,7 @@ function createHelpEmbed() {
     .addFields(
       { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
+      { name: '📢 一斉お知らせ機能', value: '「`!AI <文章>`」と入力すると、導入されているサーバーへお知らせを送信します。' },
       { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
       { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' },
       { name: '📝 アンケートに答える', value: '「`/bot-questionnaire`」コマンドでアンケートにご回答いただけます。' }
@@ -64,9 +89,18 @@ function createHelpEmbed() {
 // -------------------------------------------------------------
 // 3. Ready イベント（ログイン & ステータス設定）
 // -------------------------------------------------------------
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
-  client.user.setActivity('/help で使い方を表示', { type: ActivityType.Playing });
+  updateBotStatus();
+
+  console.log('--------------------------------------------------');
+  console.log(`🏠 導入中のサーバー一覧 (全 ${client.guilds.cache.size} サーバー):`);
+  client.guilds.cache.forEach((guild) => {
+    console.log(` - サーバー名: ${guild.name} (ID: ${guild.id}) | メンバー数: ${guild.memberCount}`);
+  });
+  console.log('--------------------------------------------------');
+
+  setInterval(updateBotStatus, 30000);
   console.log('✅ Botが正常に起動しました！');
 });
 
@@ -76,7 +110,7 @@ client.once('ready', () => {
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'help') {
-      await interaction.reply({ embeds: [createHelpEmbed()] });
+      await interaction.reply({ embeds: [createHelpEmbed()] }).catch(console.error);
       return;
     }
 
@@ -92,7 +126,7 @@ client.on('interactionCreate', async (interaction) => {
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(questionInput));
-      await interaction.showModal(modal);
+      await interaction.showModal(modal).catch(console.error);
     } 
     else if (interaction.commandName === 'bot-questionnaire') {
       const modal = new ModalBuilder()
@@ -123,7 +157,7 @@ client.on('interactionCreate', async (interaction) => {
         new ActionRowBuilder().addComponents(q3Input)
       );
 
-      await interaction.showModal(modal);
+      await interaction.showModal(modal).catch(console.error);
     }
   }
 
@@ -132,7 +166,7 @@ client.on('interactionCreate', async (interaction) => {
       const content = interaction.fields.getTextInputValue('question_content');
       const userTag = interaction.user.tag;
 
-      await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true });
+      await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true }).catch(console.error);
 
       try {
         const author = await client.users.fetch(AUTHOR_ID);
@@ -157,7 +191,7 @@ client.on('interactionCreate', async (interaction) => {
       const q3 = interaction.fields.getTextInputValue('q3_content');
       const userTag = interaction.user.tag;
 
-      await interaction.reply({ content: 'アンケートへのご協力ありがとうございました！感謝メッセージをDMでお送りしました。', ephemeral: true });
+      await interaction.reply({ content: 'アンケートへのご協力ありがとうございました！感謝メッセージをDMでお送りしました。', ephemeral: true }).catch(console.error);
 
       try {
         await interaction.user.send('🌟 **アンケートにご協力いただきありがとうございました！**\n頂いたご意見・ご提案は今後の改善に役立てさせていただきます！');
@@ -187,15 +221,63 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // -------------------------------------------------------------
-// 5. 通常メッセージ処理（会話、通常チャットのhelp、画像/ファイル解析）
+// 5. 通常メッセージ処理（会話、通常チャットのhelp、画像/ファイル解析、!AIコマンド）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
+  // ★修正機能: 特定サーバーの送信トグル付き一斉お知らせ (!AI <文章>)
+  if (message.content.startsWith('!AI ')) {
+    const announcementText = message.content.slice(4).trim();
+    if (!announcementText) {
+      await message.reply('お知らせの文章を入力してください！（例: `!AI 本日はメンテナンスです`）').catch(console.error);
+      return;
+    }
+
+    const guilds = client.guilds.cache;
+    let successCount = 0;
+    let skippedCount = 0;
+
+    for (const [guildId, guild] of guilds) {
+      // 特定サーバーの送信スキップ判定
+      if (guildId === EXCLUDED_GUILD_ID && !ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT) {
+        skippedCount++;
+        continue;
+      }
+
+      try {
+        let targetChannel = guild.systemChannel;
+
+        if (!targetChannel || !targetChannel.permissionsFor(guild.members.me)?.has('SendMessages')) {
+          targetChannel = guild.channels.cache.find(
+            (ch) =>
+              ch.type === ChannelType.GuildText &&
+              ch.permissionsFor(guild.members.me)?.has('SendMessages')
+          );
+        }
+
+        if (targetChannel) {
+          await targetChannel.send(`# AIBOTからのお知らせ\n${announcementText}`);
+          successCount++;
+        }
+      } catch (err) {
+        console.error(`サーバー (${guild.name}) への配信失敗:`, err);
+      }
+    }
+
+    let resultMsg = `📢 ${successCount}個のサーバーへお知らせを配信しました！`;
+    if (skippedCount > 0) {
+      resultMsg += `\n(※設定により ${skippedCount} 個のサーバーを除外しました)`;
+    }
+
+    await message.reply(resultMsg).catch(console.error);
+    return;
+  }
+
   const prompt = message.content.replace(/<@[!&]?\d+>/g, '').replace(/<#\d+>/g, '').trim();
 
   if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
-    await message.reply({ embeds: [createHelpEmbed()] });
+    await message.reply({ embeds: [createHelpEmbed()] }).catch(console.error);
     return;
   }
 
@@ -213,27 +295,27 @@ client.on('messageCreate', async (message) => {
   if (!isMentioned && !isReplyToBot) return;
 
   if (isProcessing) {
-    await message.reply('⏳ 現在、他の質問を処理中だよ！順番に話しかけてね。');
+    await message.reply('⏳ 現在、他の質問を処理中だよ！順番に話しかけてね。').catch(console.error);
     return;
   }
+
+  const contextKey = message.guild ? `guild_${message.guild.id}` : `dm_${message.author.id}`;
 
   try {
     isProcessing = true;
 
-    const contextKey = message.guild ? `guild_${message.guild.id}` : `dm_${message.author.id}`;
-
     if (prompt === 'リセット' || prompt === 'forget') {
       serverHistories.delete(contextKey);
-      await message.reply('🧠 このサーバーでの会話の記憶をリセットしました！');
+      await message.reply('🧠 このサーバーでの会話の記憶をリセットしました！').catch(console.error);
       return;
     }
 
     if (!prompt && message.attachments.size === 0) {
-      await message.reply('何か質問、メッセージ、またはファイルを送信してください！');
+      await message.reply('何か質問、メッセージ、またはファイルを送信してください！').catch(console.error);
       return;
     }
 
-    await message.channel.sendTyping();
+    await message.channel.sendTyping().catch(() => {});
 
     if (!serverHistories.has(contextKey)) {
       serverHistories.set(contextKey, []);
@@ -285,15 +367,18 @@ client.on('messageCreate', async (message) => {
       parts: userParts,
     });
 
+    requestTimestamps.push(Date.now());
+    updateBotStatus();
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: history,
       config: {
-        tools: [{ googleSearch: {} }], // ★これでAIが自分でググって回答できるようになります！
+        tools: [{ googleSearch: {} }],
       },
     });
 
-    const replyText = response.text;
+    const replyText = response.text || '（返答を取得できませんでした）';
 
     history.push({
       role: 'model',
@@ -304,22 +389,27 @@ client.on('messageCreate', async (message) => {
       history.splice(0, 2);
     }
 
-    // ★【修正ポイント】2000文字を超える長文対応（1900文字ずつ分割して送信）
     if (replyText.length > 1900) {
       const chunks = replyText.match(/[\s\S]{1,1900}/g) || [replyText];
       for (let i = 0; i < chunks.length; i++) {
         if (i === 0) {
-          await message.reply(chunks[i]);
+          await message.reply(chunks[i]).catch(console.error);
         } else {
-          await message.channel.send(chunks[i]);
+          await message.channel.send(chunks[i]).catch(console.error);
         }
       }
     } else {
-      await message.reply(replyText);
+      await message.reply(replyText).catch(console.error);
     }
 
   } catch (error) {
     console.error('API Exec Error:', error);
+
+    const history = serverHistories.get(contextKey);
+    if (history && history.length > 0) {
+      history.pop();
+    }
+
     const errorStr = String(error.message || error);
 
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
@@ -331,7 +421,7 @@ client.on('messageCreate', async (message) => {
         `現在、Gemini のサーバーが混み合っています。\n` +
         `📍 **発生場所**: サーバー「**${guildName}**」 / チャンネル「**#${channelName}**」\n` +
         `少し時間をおいてから再度お試しください。`
-      );
+      ).catch(console.error);
       return;
     }
 
@@ -347,11 +437,11 @@ client.on('messageCreate', async (message) => {
         `無料枠のリクエスト上限（クォータ）に達しました。\n` +
         `⏱️ **再試行までの目安時間**: \`${retryTime}\` \n` +
         `指定の時間が経過してから再度お試しください。`
-      );
+      ).catch(console.error);
       return;
     }
 
-    await message.reply(`**⚠️ エラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
+    await message.reply(`**⚠️ エラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``).catch(console.error);
 
   } finally {
     isProcessing = false;
