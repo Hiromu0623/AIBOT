@@ -9,6 +9,7 @@ import {
   EmbedBuilder,
   ActivityType,
   ChannelType,
+  SlashCommandBuilder,
 } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
@@ -77,7 +78,7 @@ function createHelpEmbed() {
     .addFields(
       { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
-      { name: '📢 一斉お知らせ機能', value: '「`!AI <文章>`」と入力すると、導入されているサーバーへお知らせを送信します。' },
+      { name: '📢 一斉お知らせ機能', value: '管理者専用のコマンドです（`!AI <文章>`）。' },
       { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
       { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' },
       { name: '📝 アンケートに答える', value: '「`/bot-questionnaire`」コマンドでアンケートにご回答いただけます。' }
@@ -87,11 +88,23 @@ function createHelpEmbed() {
 }
 
 // -------------------------------------------------------------
-// 3. Ready イベント（ログイン & ステータス設定）
+// 3. Ready イベント（ログイン & ステータス設定 & コマンド自動登録）
 // -------------------------------------------------------------
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
   updateBotStatus();
+
+  // ★スラッシュコマンド (/help など) のグローバル登録
+  try {
+    const helpCommand = new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('Botの使い方やヘルプを表示します');
+
+    await client.application.commands.create(helpCommand);
+    console.log('✅ /help スラッシュコマンドを正常に登録しました！');
+  } catch (cmdErr) {
+    console.error('コマンド登録エラー:', cmdErr);
+  }
 
   console.log('--------------------------------------------------');
   console.log(`🏠 導入中のサーバー一覧 (全 ${client.guilds.cache.size} サーバー):`);
@@ -226,8 +239,14 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // ★修正機能: 特定サーバーの送信トグル付き一斉お知らせ (!AI <文章>)
+  // ★修正機能: 特定ユーザー専用の一斉お知らせ (!AI <文章>)
   if (message.content.startsWith('!AI ')) {
+    // 実行者のID制限チェック (指定のID以外は弾く)
+    if (message.author.id !== '1488322044335755294') {
+      await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
+      return;
+    }
+
     const announcementText = message.content.slice(4).trim();
     if (!announcementText) {
       await message.reply('お知らせの文章を入力してください！（例: `!AI 本日はメンテナンスです`）').catch(console.error);
