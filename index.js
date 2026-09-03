@@ -117,6 +117,23 @@ function createInfoEmbed() {
     .setTimestamp();
 }
 
+// ★503混雑エラー発生時の自動リトライ付き API 実行関数
+async function generateContentWithRetry(ai, params, retries = 2, delay = 2000) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (err) {
+      const errStr = String(err.message || err);
+      if ((errStr.includes('503') || errStr.includes('UNAVAILABLE')) && i < retries) {
+        console.log(`⚠️ 503混雑エラー発生。${delay / 1000}秒後に自動リトライします... (${i + 1}/${retries})`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // -------------------------------------------------------------
 // 3. Ready イベント
 // -------------------------------------------------------------
@@ -180,8 +197,9 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // 新しいメッセージを送信
-      const replyMsg = await interaction.reply({ embeds: [createInfoEmbed()], fetchReply: true }).catch(console.error);
+      // 新しいメッセージを送信 (withResponse を使用)
+      const response = await interaction.reply({ embeds: [createInfoEmbed()], withResponse: true }).catch(console.error);
+      const replyMsg = response?.resource?.message;
 
       if (replyMsg) {
         // 10秒ごとに自動更新するタイマーをセット
@@ -297,7 +315,7 @@ client.on('messageCreate', async (message) => {
     let skippedCount = 0;
 
     for (const [guildId, guild] of guilds) {
-      // 🚫 指定の除外サーバー（1470380389561405554）は絶対にスキップ
+      // 🚫 指定の除外サーバーは絶対にスキップ
       if (guildId === EXCLUDED_GUILD_ID && !ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT) {
         console.log(`🚫 除外指定サーバーのためスキップ: ${guild.name} (${guildId})`);
         skippedCount++;
@@ -305,12 +323,13 @@ client.on('messageCreate', async (message) => {
       }
 
       try {
+        const channels = await guild.channels.fetch().catch(() => guild.channels.cache);
         let targetChannel = guild.systemChannel;
 
-        // システムチャンネルが使えない場合、書き込み可能なテキストチャンネルを探索
         if (!targetChannel || !targetChannel.permissionsFor(guild.members.me)?.has(['ViewChannel', 'SendMessages'])) {
-          targetChannel = guild.channels.cache.find(
+          targetChannel = channels.find(
             (ch) =>
+              ch &&
               ch.type === ChannelType.GuildText &&
               ch.permissionsFor(guild.members.me)?.has(['ViewChannel', 'SendMessages'])
           );
@@ -433,7 +452,8 @@ client.on('messageCreate', async (message) => {
     requestTimestamps.push(Date.now());
     updateBotStatus();
 
-    const response = await ai.models.generateContent({
+    // ★自動リトライ付き関数を使用
+    const response = await generateContentWithRetry(ai, {
       model: 'gemini-2.5-flash',
       contents: history,
       config: {
@@ -477,14 +497,14 @@ client.on('messageCreate', async (message) => {
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
     const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
-    // 503 混雑エラー
+    // 503 混雑エラー（リトライしても改善しなかった場合）
     if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE')) {
       congestionErrorCount++;
       await message.reply(
         `⚠️ **Gemini サーバー混雑エラー (503)**\n` +
         `現在、Gemini のサーバーが混み合っています。\n` +
         `📍 **発生場所**: サーバー「**${guildName}**」 / チャンネル「**#${channelName}**」\n` +
-        `少し時間をおいてから再度お試しください。`
+        `少し時間をおいてから再度お試信ください。`
       ).catch(console.error);
       return;
     }
@@ -504,7 +524,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ★ 503, 429 以外の未知のエラーが発生した場合、開発者（1488322044335755294）へ通知
+    // 未知のエラーが発生した場合、開発者へ通知
     apiErrorCount++;
     await message.reply(`**⚠️ 予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``).catch(console.error);
 
