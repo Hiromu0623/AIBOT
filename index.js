@@ -344,47 +344,55 @@ client.on('messageCreate', async (message) => {
     const jstNow = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
     let textContent = `[現在の日本時間: ${jstNow}]\n${prompt}`;
 
-    const userParts = [];
+    // -------------------------------------------------------------
+// ★修正箇所：添付ファイルとテキストの読み込み処理
+// -------------------------------------------------------------
+const userParts = [];
 
-    if (message.attachments.size > 0) {
-      for (const [_, attachment] of message.attachments) {
-        try {
-          const response = await fetch(attachment.url);
-          const mimeType = attachment.contentType || '';
+if (message.attachments.size > 0) {
+  for (const [_, attachment] of message.attachments) {
+    try {
+      const response = await fetch(attachment.url);
+      const mimeType = attachment.contentType || '';
 
-          if (
-            mimeType.includes('text') ||
-            mimeType.includes('javascript') ||
-            mimeType.includes('json') ||
-            attachment.name.endsWith('.js') ||
-            attachment.name.endsWith('.txt') ||
-            attachment.name.endsWith('.json')
-          ) {
-            const fileText = await response.text();
-            textContent += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
-          } else {
-            const arrayBuffer = await response.arrayBuffer();
-            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+      // テキスト・コード類の場合
+      if (
+        mimeType.includes('text') ||
+        mimeType.includes('javascript') ||
+        mimeType.includes('json') ||
+        attachment.name.endsWith('.js') ||
+        attachment.name.endsWith('.txt') ||
+        attachment.name.endsWith('.json')
+      ) {
+        const fileText = await response.text();
+        textContent += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
+      } 
+      // 画像・動画・その他メディアの場合（★ここに修正が入りました）
+      else {
+        const arrayBuffer = await response.arrayBuffer();
+        const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
-            userParts.push({
-              inlineData: {
-                data: base64Data,
-                mimeType: mimeType || 'application/octet-stream',
-              },
-            });
-          }
-        } catch (fileErr) {
-          console.error('ファイル読み込みエラー:', fileErr);
-        }
+        userParts.push({
+          inlineData: {
+            // 画像形式が判別できない場合のフォールバックを指定
+            mimeType: mimeType.startsWith('image/') ? mimeType : 'image/jpeg',
+            data: base64Data,
+          },
+        });
       }
+    } catch (fileErr) {
+      console.error('ファイル読み込みエラー:', fileErr);
     }
+  }
+}
 
-    userParts.unshift({ text: textContent });
+// ★テキストを【配列の最後】に追加（または画像を後に配置）
+userParts.push({ text: textContent });
 
-    history.push({
-      role: 'user',
-      parts: userParts,
-    });
+history.push({
+  role: 'user',
+  parts: userParts,
+});
 
     requestTimestamps.push(Date.now());
     updateBotStatus();
