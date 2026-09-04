@@ -10,6 +10,8 @@ import {
   ActivityType,
   ChannelType,
   SlashCommandBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
@@ -41,12 +43,13 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildPresences, // 作者のオンライン状態取得用
   ],
 });
 
-// 会話記憶・ステータス管理用変数
+// 会話記憶・ステータス管理用変数（RAM節約のため削減）
 const serverHistories = new Map();
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 5; // RAM圧迫回避のため履歴保持数を5往復に最適化
 
 const requestTimestamps = [];
 const GEMINI_RPM_LIMIT = 15; // 1分間あたりの制限回数
@@ -57,7 +60,7 @@ let isProcessing = false;
 let apiErrorCount = 0;       // 429等のAPIエラー
 let congestionErrorCount = 0; // 503混雑エラー
 
-// ★/AI-Info の各サーバー最新メッセージ管理 Map (guildId -> { channelId, messageId, intervalId })
+// ★/bot-info の各サーバー最新メッセージ管理 Map
 const activeInfoMessages = new Map();
 
 // ステータス更新関数
@@ -82,7 +85,7 @@ function createHelpEmbed() {
     .addFields(
       { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
-      { name: '📊 ステータス確認', value: '「`/AI-Info`」で現在のBotのリアルタイム情報を表示します。' },
+      { name: '📊 ステータス確認', value: '「`/bot-info`」で現在のBotのリアルタイム情報を表示します。' },
       { name: '📢 一斉お知らせ機能', value: '管理者専用のコマンドです（`!AI <文章>`）。' },
       { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
       { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' }
@@ -91,8 +94,39 @@ function createHelpEmbed() {
     .setFooter({ text: 'サーバーごとに独立した会話記憶を保持しています' });
 }
 
-// ★/AI-Info 用 Embed 生成関数
-function createInfoEmbed() {
+// ★作者のステータス文字列を取得する関数
+async function getAuthorStatus(guild) {
+  try {
+    let authorMember = null;
+    if (guild) {
+      authorMember = await guild.members.fetch(AUTHOR_ID).catch(() => null);
+    }
+
+    if (!authorMember) {
+      for (const g of client.guilds.cache.values()) {
+        authorMember = await g.members.fetch(AUTHOR_ID).catch(() => null);
+        if (authorMember) break;
+      }
+    }
+
+    if (!authorMember || !authorMember.presence) {
+      return '⚪ オフライン（または取得不可）';
+    }
+
+    const status = authorMember.presence.status;
+    switch (status) {
+      case 'online': return '🟢 オンライン';
+      case 'idle': return '🟡 退席中';
+      case 'dnd': return '🔴 取り込み中';
+      case 'offline': default: return '⚪ オフライン';
+    }
+  } catch (e) {
+    return '⚪ オフライン';
+  }
+}
+
+// ★/bot-info 用 Embed 生成関数（サーバー名＋メンバー数表示に対応）
+async function createInfoEmbed(guild) {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
     requestTimestamps.shift();
@@ -100,12 +134,18 @@ function createInfoEmbed() {
   const remainingRequests = Math.max(0, GEMINI_RPM_LIMIT - requestTimestamps.length);
   const ping = client.ws.ping >= 0 ? `${client.ws.ping}ms` : '計測中...';
 
-  const guildNames = client.guilds.cache.map(g => `・ ${g.name}`).join('\n') || 'なし';
+  // 各サーバー名に「メンバー数」を追加表示
+  const guildNames = client.guilds.cache
+    .map(g => `・ ${g.name} (👥 ${g.memberCount}人)`)
+    .join('\n') || 'なし';
+
+  const authorStatus = await getAuthorStatus(guild);
 
   return new EmbedBuilder()
     .setTitle('📊 Bot リアルタイムステータス')
     .setColor('#00ffcc')
     .addFields(
+      { name: '👑 開発者ステータス', value: `\`${authorStatus}\``, inline: true },
       { name: '⚡ 残り回答制限数 (1分あたり)', value: `\`${remainingRequests} / ${GEMINI_RPM_LIMIT}\``, inline: true },
       { name: '📡 応答速度 (Ping)', value: `\`${ping}\``, inline: true },
       { name: '🏠 導入サーバー数', value: `\`${client.guilds.cache.size}\` サーバー`, inline: true },
@@ -145,7 +185,7 @@ client.once('clientReady', async () => {
   try {
     const commands = [
       new SlashCommandBuilder().setName('help').setDescription('Botの使い方やヘルプを表示します'),
-      new SlashCommandBuilder().setName('ai-info').setDescription('Botのリアルタイム情報（Ping、残り回答数等）を表示します'),
+      new SlashCommandBuilder().setName('bot-info').setDescription('Botのリアルタイム情報（Ping、残り回答数等）を表示します'),
       new SlashCommandBuilder().setName('bot-question').setDescription('開発者へ質問や提案を送信します'),
       new SlashCommandBuilder().setName('bot-questionnaire').setDescription('Botのアンケートに回答します'),
     ];
@@ -168,20 +208,20 @@ client.once('clientReady', async () => {
 });
 
 // -------------------------------------------------------------
-// 4. モーダル ＆ スラッシュコマンド処理
+// 4. インタラクション処理（ボタン、モーダル、コマンド）
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
+  // --- スラッシュコマンド処理 ---
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'help') {
       await interaction.reply({ embeds: [createHelpEmbed()] }).catch(console.error);
       return;
     }
 
-    // ★ /AI-Info コマンド処理
-    if (interaction.commandName === 'ai-info') {
+    // ★ /bot-info コマンド処理
+    if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
-      // 既存の自動更新タスクがあれば停止＆メッセージ削除
       if (activeInfoMessages.has(guildId)) {
         const oldData = activeInfoMessages.get(guildId);
         clearInterval(oldData.intervalId);
@@ -192,22 +232,19 @@ client.on('interactionCreate', async (interaction) => {
             const oldMsg = await oldChannel.messages.fetch(oldData.messageId);
             if (oldMsg) await oldMsg.delete();
           }
-        } catch (e) {
-          // 古いメッセージが見つからない・削除権限がない場合は無視
-        }
+        } catch (e) {}
       }
 
-      // 新しいメッセージを送信 (withResponse を使用)
-      const response = await interaction.reply({ embeds: [createInfoEmbed()], withResponse: true }).catch(console.error);
+      const initialEmbed = await createInfoEmbed(interaction.guild);
+      const response = await interaction.reply({ embeds: [initialEmbed], withResponse: true }).catch(console.error);
       const replyMsg = response?.resource?.message;
 
       if (replyMsg) {
-        // 10秒ごとに自動更新するタイマーをセット
         const intervalId = setInterval(async () => {
           try {
-            await interaction.editReply({ embeds: [createInfoEmbed()] });
+            const updatedEmbed = await createInfoEmbed(interaction.guild);
+            await interaction.editReply({ embeds: [updatedEmbed] });
           } catch (err) {
-            // メッセージが削除された等の場合はタイマー解除
             clearInterval(intervalId);
             activeInfoMessages.delete(guildId);
           }
@@ -248,7 +285,29 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
+  // --- ボタン処理（作者が返信ボタンを押した時） ---
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith('reply_to_user_')) {
+      const targetUserId = interaction.customId.replace('reply_to_user_', '');
+
+      const modal = new ModalBuilder()
+        .setCustomId(`modal_reply_send_${targetUserId}`)
+        .setTitle('ユーザーへの返信メッセージ作成');
+
+      const replyInput = new TextInputBuilder()
+        .setCustomId('reply_message_text')
+        .setLabel('ユーザーに送る返信内容を入力してください')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(replyInput));
+      await interaction.showModal(modal).catch(console.error);
+    }
+  }
+
+  // --- モーダル送信処理 ---
   if (interaction.isModalSubmit()) {
+    // ★ 質問モーダル送信
     if (interaction.customId === 'modal_bot_question') {
       const content = interaction.fields.getTextInputValue('question_content');
       await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true }).catch(console.error);
@@ -260,12 +319,22 @@ client.on('interactionCreate', async (interaction) => {
           .addFields({ name: '送信者', value: `${interaction.user.tag} (${interaction.user.id})` }, { name: '内容', value: content })
           .setColor('#0099ff')
           .setTimestamp();
-        await author.send({ embeds: [embed] });
+
+        // 返信ボタン作成
+        const replyBtn = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`reply_to_user_${interaction.user.id}`)
+            .setLabel('💬 送信者に返信')
+            .setStyle(ButtonStyle.Primary)
+        );
+
+        await author.send({ embeds: [embed], components: [replyBtn] });
       } catch (e) {
         console.error('作者へのDM送信失敗:', e);
       }
     }
 
+    // ★ アンケートモーダル送信
     if (interaction.customId === 'modal_bot_questionnaire') {
       const q1 = interaction.fields.getTextInputValue('q1_content');
       const q2 = interaction.fields.getTextInputValue('q2_content');
@@ -283,9 +352,42 @@ client.on('interactionCreate', async (interaction) => {
           )
           .setColor('#00ff99')
           .setTimestamp();
-        await author.send({ embeds: [embed] });
+
+        // 返信ボタン作成
+        const replyBtn = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`reply_to_user_${interaction.user.id}`)
+            .setLabel('💬 送信者に返信')
+            .setStyle(ButtonStyle.Primary)
+        );
+
+        await author.send({ embeds: [embed], components: [replyBtn] });
       } catch (e) {
         console.error('作者へのDM送信失敗:', e);
+      }
+    }
+
+    // ★ 作者からユーザーへのDM返信処理
+    if (interaction.customId.startsWith('modal_reply_send_')) {
+      const targetUserId = interaction.customId.replace('modal_reply_send_', '');
+      const replyMessage = interaction.fields.getTextInputValue('reply_message_text');
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        const targetUser = await client.users.fetch(targetUserId);
+        const dmEmbed = new EmbedBuilder()
+          .setTitle('📩 開発者（作者）からの返信が届きました')
+          .setDescription(replyMessage)
+          .setColor('#ff9900')
+          .setFooter({ text: '※このメッセージはBotからの自動転送です' })
+          .setTimestamp();
+
+        await targetUser.send({ embeds: [dmEmbed] });
+        await interaction.editReply({ content: `✅ <@${targetUserId}> への返信DMを正常に送信しました！` });
+      } catch (err) {
+        console.error('ユーザーへのDM返信失敗:', err);
+        await interaction.editReply({ content: `❌ <@${targetUserId}> へのDM送信に失敗しました。（DMを受け取らない設定にしている可能性があります）` });
       }
     }
   }
@@ -315,7 +417,6 @@ client.on('messageCreate', async (message) => {
     let skippedCount = 0;
 
     for (const [guildId, guild] of guilds) {
-      // 🚫 指定の除外サーバーは絶対にスキップ
       if (guildId === EXCLUDED_GUILD_ID && !ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT) {
         console.log(`🚫 除外指定サーバーのためスキップ: ${guild.name} (${guildId})`);
         skippedCount++;
@@ -452,7 +553,7 @@ client.on('messageCreate', async (message) => {
     requestTimestamps.push(Date.now());
     updateBotStatus();
 
-    // ★自動リトライ付き関数を使用
+    // ★自動リトライ付き API 呼び出し
     const response = await generateContentWithRetry(ai, {
       model: 'gemini-2.5-flash',
       contents: history,
@@ -468,8 +569,9 @@ client.on('messageCreate', async (message) => {
       parts: [{ text: replyText }],
     });
 
+    // RAM容量保護のため、履歴がMAX_HISTORYを超えたら即削除
     if (history.length > MAX_HISTORY * 2) {
-      history.splice(0, 2);
+      history.splice(0, history.length - (MAX_HISTORY * 2));
     }
 
     if (replyText.length > 1900) {
@@ -497,14 +599,14 @@ client.on('messageCreate', async (message) => {
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
     const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
-    // 503 混雑エラー（リトライしても改善しなかった場合）
+    // 503 混雑エラー
     if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE')) {
       congestionErrorCount++;
       await message.reply(
         `⚠️ **Gemini サーバー混雑エラー (503)**\n` +
         `現在、Gemini のサーバーが混み合っています。\n` +
         `📍 **発生場所**: サーバー「**${guildName}**」 / チャンネル「**#${channelName}**」\n` +
-        `少し時間をおいてから再度お試信ください。`
+        `少し時間をおいてから再度お試しください。`
       ).catch(console.error);
       return;
     }
@@ -524,7 +626,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 未知のエラーが発生した場合、開発者へ通知
+    // 未知のエラーが発生した場合
     apiErrorCount++;
     await message.reply(`**⚠️ 予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``).catch(console.error);
 
