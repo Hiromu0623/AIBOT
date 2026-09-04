@@ -32,6 +32,11 @@ http.createServer((req, res) => {
 // -------------------------------------------------------------
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
+// ★カスタム絵文字の定義
+const EMOJI_LOADING = '<a:loading:1545302736684322926>';
+const EMOJI_ERROR = '<a:error:1545303132358311997>';
+const EMOJI_INFO = '<:info:1545303757796024330>';
+
 // ★お知らせ配信の制御設定
 const EXCLUDED_GUILD_ID = '1470380389561405554'; // 絶対に除外するサーバーID
 const ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT = false; // trueにすると除外サーバーにも送る / falseだと送らない
@@ -125,7 +130,7 @@ async function getAuthorStatus(guild) {
   }
 }
 
-// ★/bot-info 用 Embed 生成関数（サーバー名＋メンバー数表示に対応）
+// ★/bot-info 用 Embed 生成関数（絵文字 <:info:...> をタイトルの最初に追加）
 async function createInfoEmbed(guild) {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
@@ -142,7 +147,7 @@ async function createInfoEmbed(guild) {
   const authorStatus = await getAuthorStatus(guild);
 
   return new EmbedBuilder()
-    .setTitle('📊 Bot リアルタイムステータス')
+    .setTitle(`${EMOJI_INFO} Bot リアルタイムステータス`)
     .setColor('#00ffcc')
     .addFields(
       { name: '👑 開発者ステータス', value: `\`${authorStatus}\``, inline: true },
@@ -307,7 +312,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // --- モーダル送信処理 ---
   if (interaction.isModalSubmit()) {
-    // ★ 質問モーダル送信
+    // 質問モーダル送信
     if (interaction.customId === 'modal_bot_question') {
       const content = interaction.fields.getTextInputValue('question_content');
       await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true }).catch(console.error);
@@ -320,7 +325,6 @@ client.on('interactionCreate', async (interaction) => {
           .setColor('#0099ff')
           .setTimestamp();
 
-        // 返信ボタン作成
         const replyBtn = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`reply_to_user_${interaction.user.id}`)
@@ -334,7 +338,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ★ アンケートモーダル送信
+    // アンケートモーダル送信
     if (interaction.customId === 'modal_bot_questionnaire') {
       const q1 = interaction.fields.getTextInputValue('q1_content');
       const q2 = interaction.fields.getTextInputValue('q2_content');
@@ -353,7 +357,6 @@ client.on('interactionCreate', async (interaction) => {
           .setColor('#00ff99')
           .setTimestamp();
 
-        // 返信ボタン作成
         const replyBtn = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`reply_to_user_${interaction.user.id}`)
@@ -367,7 +370,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ★ 作者からユーザーへのDM返信処理
+    // 作者からユーザーへのDM返信処理
     if (interaction.customId.startsWith('modal_reply_send_')) {
       const targetUserId = interaction.customId.replace('modal_reply_send_', '');
       const replyMessage = interaction.fields.getTextInputValue('reply_message_text');
@@ -399,7 +402,7 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // ★一斉お知らせ (!AI <文章>) - 特定サーバー除外つき
+  // 一斉お知らせ (!AI <文章>) - 特定サーバー除外つき
   if (message.content.startsWith('!AI ')) {
     if (message.author.id !== AUTHOR_ID) {
       await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
@@ -478,11 +481,12 @@ client.on('messageCreate', async (message) => {
   if (!isMentioned && !isReplyToBot) return;
 
   if (isProcessing) {
-    await message.reply('⏳ 現在、他の質問を処理中だよ！順番に話しかけてね。').catch(console.error);
+    await message.reply(`${EMOJI_LOADING} 現在、他の質問を処理中だよ！順番に話しかけてね。`).catch(console.error);
     return;
   }
 
   const contextKey = message.guild ? `guild_${message.guild.id}` : `dm_${message.author.id}`;
+  let loadingMsg = null;
 
   try {
     isProcessing = true;
@@ -498,7 +502,8 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    await message.channel.sendTyping().catch(() => {});
+    // ★回答待機中メッセージを送信
+    loadingMsg = await message.reply(`${EMOJI_LOADING} 回答を待機中...`).catch(console.error);
 
     if (!serverHistories.has(contextKey)) {
       serverHistories.set(contextKey, []);
@@ -574,17 +579,23 @@ client.on('messageCreate', async (message) => {
       history.splice(0, history.length - (MAX_HISTORY * 2));
     }
 
+    // ★待機中メッセージを実際の回答に編集
     if (replyText.length > 1900) {
       const chunks = replyText.match(/[\s\S]{1,1900}/g) || [replyText];
-      for (let i = 0; i < chunks.length; i++) {
-        if (i === 0) {
-          await message.reply(chunks[i]).catch(console.error);
-        } else {
-          await message.channel.send(chunks[i]).catch(console.error);
-        }
+      if (loadingMsg) {
+        await loadingMsg.edit(chunks[0]).catch(console.error);
+      } else {
+        await message.reply(chunks[0]).catch(console.error);
+      }
+      for (let i = 1; i < chunks.length; i++) {
+        await message.channel.send(chunks[i]).catch(console.error);
       }
     } else {
-      await message.reply(replyText).catch(console.error);
+      if (loadingMsg) {
+        await loadingMsg.edit(replyText).catch(console.error);
+      } else {
+        await message.reply(replyText).catch(console.error);
+      }
     }
 
   } catch (error) {
@@ -599,15 +610,24 @@ client.on('messageCreate', async (message) => {
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
     const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
+    // エラー時の返信関数（待機中メッセージがあれば編集、なければ新規返信）
+    const sendErrorReply = async (content) => {
+      if (loadingMsg) {
+        await loadingMsg.edit(content).catch(console.error);
+      } else {
+        await message.reply(content).catch(console.error);
+      }
+    };
+
     // 503 混雑エラー
     if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE')) {
       congestionErrorCount++;
-      await message.reply(
-        `⚠️ **Gemini サーバー混雑エラー (503)**\n` +
+      await sendErrorReply(
+        `${EMOJI_ERROR} **Gemini サーバー混雑エラー (503)**\n` +
         `現在、Gemini のサーバーが混み合っています。\n` +
         `📍 **発生場所**: サーバー「**${guildName}**」 / チャンネル「**#${channelName}**」\n` +
         `少し時間をおいてから再度お試しください。`
-      ).catch(console.error);
+      );
       return;
     }
 
@@ -618,17 +638,17 @@ client.on('messageCreate', async (message) => {
       const retryMatch = errorStr.match(/"retryDelay"\s*:\s*"([^"]+)"/) || errorStr.match(/Please retry in ([^\s]+)/);
       if (retryMatch && retryMatch[1]) retryTime = retryMatch[1];
 
-      await message.reply(
-        `⚠️ **API利用制限エラー (429)**\n` +
+      await sendErrorReply(
+        `${EMOJI_ERROR} **API利用制限エラー (429)**\n` +
         `無料枠のリクエスト上限に達しました。\n` +
         `⏱️ **再試行までの目安時間**: \`${retryTime}\``
-      ).catch(console.error);
+      );
       return;
     }
 
-    // 未知のエラーが発生した場合
+    // 未知のエラー（404等含む）が発生した場合
     apiErrorCount++;
-    await message.reply(`**⚠️ 予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``).catch(console.error);
+    await sendErrorReply(`${EMOJI_ERROR} **予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
 
     try {
       const author = await client.users.fetch(AUTHOR_ID);
