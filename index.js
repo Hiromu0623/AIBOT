@@ -17,15 +17,13 @@ import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
 
 // -------------------------------------------------------------
-// 1. Render のスリープ・Port検出回避用 HTTP サーバー (最優先起動)
+// 1. Render のスリープ回避用 HTTP サーバー
 // -------------------------------------------------------------
-const PORT = process.env.PORT || 10000;
-const server = http.createServer((req, res) => {
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is alive!');
-});
-
-server.listen(PORT, '0.0.0.0', () => {
+}).listen(PORT, () => {
   console.log(`🌐 HTTP Server running on port ${PORT}`);
 });
 
@@ -54,18 +52,18 @@ const client = new Client({
   ],
 });
 
-// 会話記憶・ステータス管理用変数
+// 会話記憶・ステータス管理用変数（RAM節約のため削減）
 const serverHistories = new Map();
-const MAX_HISTORY = 5;
+const MAX_HISTORY = 5; // RAM圧迫回避のため履歴保持数を5往復に最適化
 
 const requestTimestamps = [];
-const GEMINI_RPM_LIMIT = 15;
+const GEMINI_RPM_LIMIT = 15; // 1分間あたりの制限回数
 
 let isProcessing = false;
 
 // ★エラーカウント用変数
-let apiErrorCount = 0;
-let congestionErrorCount = 0;
+let apiErrorCount = 0;       // 429等のAPIエラー
+let congestionErrorCount = 0; // 503混雑エラー
 
 // ★/bot-info の各サーバー最新メッセージ管理 Map
 const activeInfoMessages = new Map();
@@ -132,7 +130,7 @@ async function getAuthorStatus(guild) {
   }
 }
 
-// ★/bot-info 用 Embed 生成関数
+// ★/bot-info 用 Embed 生成関数（絵文字 <:info:...> をタイトルの最初に追加）
 async function createInfoEmbed(guild) {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
@@ -141,6 +139,7 @@ async function createInfoEmbed(guild) {
   const remainingRequests = Math.max(0, GEMINI_RPM_LIMIT - requestTimestamps.length);
   const ping = client.ws.ping >= 0 ? `${client.ws.ping}ms` : '計測中...';
 
+  // 各サーバー名に「メンバー数」を追加表示
   const guildNames = client.guilds.cache
     .map(g => `・ ${g.name} (👥 ${g.memberCount}人)`)
     .join('\n') || 'なし';
@@ -217,12 +216,14 @@ client.once('clientReady', async () => {
 // 4. インタラクション処理（ボタン、モーダル、コマンド）
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
+  // --- スラッシュコマンド処理 ---
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'help') {
       await interaction.reply({ embeds: [createHelpEmbed()] }).catch(console.error);
       return;
     }
 
+    // ★ /bot-info コマンド処理
     if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
@@ -289,6 +290,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
+  // --- ボタン処理（作者が返信ボタンを押した時） ---
   if (interaction.isButton()) {
     if (interaction.customId.startsWith('reply_to_user_')) {
       const targetUserId = interaction.customId.replace('reply_to_user_', '');
@@ -308,7 +310,9 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
+  // --- モーダル送信処理 ---
   if (interaction.isModalSubmit()) {
+    // 質問モーダル送信
     if (interaction.customId === 'modal_bot_question') {
       const content = interaction.fields.getTextInputValue('question_content');
       await interaction.reply({ content: '質問・提案を送信しました！ありがとうございます。', ephemeral: true }).catch(console.error);
@@ -334,6 +338,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // アンケートモーダル送信
     if (interaction.customId === 'modal_bot_questionnaire') {
       const q1 = interaction.fields.getTextInputValue('q1_content');
       const q2 = interaction.fields.getTextInputValue('q2_content');
@@ -365,6 +370,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // 作者からユーザーへのDM返信処理
     if (interaction.customId.startsWith('modal_reply_send_')) {
       const targetUserId = interaction.customId.replace('modal_reply_send_', '');
       const replyMessage = interaction.fields.getTextInputValue('reply_message_text');
@@ -396,6 +402,7 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
+  // 一斉お知らせ (!AI <文章>) - 特定サーバー除外つき
   if (message.content.startsWith('!AI ')) {
     if (message.author.id !== AUTHOR_ID) {
       await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
@@ -495,6 +502,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // ★回答待機中メッセージを送信
     loadingMsg = await message.reply(`${EMOJI_LOADING} 回答を待機中...`).catch(console.error);
 
     if (!serverHistories.has(contextKey)) {
@@ -550,6 +558,7 @@ client.on('messageCreate', async (message) => {
     requestTimestamps.push(Date.now());
     updateBotStatus();
 
+    // ★自動リトライ付き API 呼び出し
     const response = await generateContentWithRetry(ai, {
       model: 'gemini-2.5-flash',
       contents: history,
@@ -565,10 +574,12 @@ client.on('messageCreate', async (message) => {
       parts: [{ text: replyText }],
     });
 
+    // RAM容量保護のため、履歴がMAX_HISTORYを超えたら即削除
     if (history.length > MAX_HISTORY * 2) {
       history.splice(0, history.length - (MAX_HISTORY * 2));
     }
 
+    // ★待機中メッセージを実際の回答に編集
     if (replyText.length > 1900) {
       const chunks = replyText.match(/[\s\S]{1,1900}/g) || [replyText];
       if (loadingMsg) {
@@ -599,6 +610,7 @@ client.on('messageCreate', async (message) => {
     const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
     const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
+    // エラー時の返信関数（待機中メッセージがあれば編集、なければ新規返信）
     const sendErrorReply = async (content) => {
       if (loadingMsg) {
         await loadingMsg.edit(content).catch(console.error);
@@ -607,6 +619,7 @@ client.on('messageCreate', async (message) => {
       }
     };
 
+    // 503 混雑エラー
     if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE')) {
       congestionErrorCount++;
       await sendErrorReply(
@@ -618,6 +631,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // 429 レート制限エラー
     if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
       apiErrorCount++;
       let retryTime = '不明（少し待ってからお試しください）';
@@ -632,6 +646,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
+    // 未知のエラー（404等含む）が発生した場合
     apiErrorCount++;
     await sendErrorReply(`${EMOJI_ERROR} **予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
 
