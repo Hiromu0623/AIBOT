@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import http from 'http';
 import {
   Client,
@@ -15,6 +16,9 @@ import {
 } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
+
+// 2. インポート直後に IPv4 優先を設定する
+dns.setDefaultResultOrder('ipv4first');
 
 // -------------------------------------------------------------
 // 1. Render の Port 検出・スリープ回避用 HTTP サーバー (最優先起動)
