@@ -17,13 +17,15 @@ import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
 
 // -------------------------------------------------------------
-// 1. Render のスリープ回避用 HTTP サーバー
+// 1. Render の Port 検出・スリープ回避用 HTTP サーバー (最優先起動)
 // -------------------------------------------------------------
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
+const PORT = process.env.PORT || 10000;
+const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is alive!');
-}).listen(PORT, () => {
+});
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 HTTP Server running on port ${PORT}`);
 });
 
