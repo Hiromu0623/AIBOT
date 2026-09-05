@@ -674,6 +674,8 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN).catch((err) => {
-  console.error('❌ Discord Login Error:', err);
-});
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log('🔑 Discord Token login process initiated.'))
+  .catch((err) => {
+    console.error('❌ Discord Login Error:', err);
+  });
