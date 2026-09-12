@@ -35,7 +35,7 @@ server.listen(PORT, '0.0.0.0', () => {
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
 // ★カスタム絵文字の定義
-const EMOJI_LOADING = '<a:loading:1545302736684322926>';
+const EMOJI_LOADING = '<a:loading:1548168752917647421>';
 const EMOJI_ERROR = '<a:error:1545303132358311997>';
 const EMOJI_INFO = '<:info:1545303757796024330>';
 
