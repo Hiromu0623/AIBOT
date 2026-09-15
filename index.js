@@ -12,6 +12,7 @@ import {
   SlashCommandBuilder,
   ButtonBuilder,
   ButtonStyle,
+  AuditLogEvent,
 } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
@@ -285,7 +286,53 @@ client.once('clientReady', async () => {
 });
 
 // -------------------------------------------------------------
-// 4. インタラクション処理（Slash Command / Modal / Button）
+// 4. サーバー参加時イベント (導入者へのDMウェルカムメッセージ)
+// -------------------------------------------------------------
+client.on('guildCreate', async (guild) => {
+  updateBotStatus();
+
+  try {
+    // 監査ログからBotを追加したユーザー（管理者）を取得
+    const auditLogs = await guild.fetchAuditLogs({
+      type: AuditLogEvent.BotAdd,
+      limit: 1,
+    }).catch(() => null);
+
+    let inviter = null;
+    if (auditLogs) {
+      const entry = auditLogs.entries.first();
+      if (entry && entry.target && entry.target.id === client.user.id) {
+        inviter = entry.executor;
+      }
+    }
+
+    // 監査ログから取得できない場合はサーバーオーナーを対象にする
+    if (!inviter) {
+      const owner = await guild.fetchOwner().catch(() => null);
+      if (owner) inviter = owner.user;
+    }
+
+    // 指定のウェルカムメッセージをDM送信
+    if (inviter) {
+      const welcomeMessage = 
+`# サーバーにAIBOTを入れていただき、ありがとうございます！
+@AIBOT <内容>とメンションすれば回答が返ってきます！
+もし使用していて、おかしい、欲しい機能がある場合は/bot-question を実行してみてください！もしかしたら修正・追加されます！
+利用規約はプライバシーポリシーは
+https://hiromu0623.github.io/AIBot---Privacy-Policy-Terms-of-Service/
+をご覧ください！`;
+
+      await inviter.send(welcomeMessage).catch((dmErr) => {
+        console.log(`導入者 (${inviter.tag}) へのDM送信に失敗しました:`, dmErr);
+      });
+    }
+  } catch (err) {
+    console.error('guildCreate 処理エラー:', err);
+  }
+});
+
+// -------------------------------------------------------------
+// 5. インタラクション処理（Slash Command / Modal / Button）
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
@@ -296,7 +343,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-info コマンド（旧メッセージ削除＆10秒自動更新） ---
+    // --- /bot-info コマンド ---
     if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
@@ -337,7 +384,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-mode (喋り方切り替え) ---
+    // --- /bot-mode ---
     if (interaction.commandName === 'bot-mode') {
       const selectedCategory = interaction.options.getString('category');
       const contextKey = interaction.guildId ? `guild_${interaction.guildId}` : `dm_${interaction.user.id}`;
@@ -351,7 +398,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-image-create (画像生成 & 直接ファイル送信 & エラーログ詳細化) ---
+    // --- /bot-image-create ---
     if (interaction.commandName === 'bot-image-create') {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
@@ -382,12 +429,10 @@ client.on('interactionCreate', async (interaction) => {
         });
 
       } catch (err) {
-        // Render ログにエラーの発生状況を詳細に出力
         console.error('❌ [IMAGE GENERATION ERROR]');
         console.error(`Prompt: ${description}`);
         console.error(err);
 
-        // Discordメッセージ上にも具体的なエラー内容を表示
         const errorMessage = err.message || '不明なエラーが発生しました';
         await interaction.editReply({
           content: `${EMOJI_ERROR} **画像生成中にエラーが発生しました**\n\`\`\`js\n${errorMessage.slice(0, 1800)}\n\`\`\``
@@ -523,7 +568,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // -------------------------------------------------------------
-// 5. 通常メッセージ処理（管理パネル・会話）
+// 6. 通常メッセージ処理（管理パネル・会話）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
