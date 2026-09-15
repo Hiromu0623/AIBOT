@@ -406,70 +406,41 @@ client.on('interactionCreate', async (interaction) => {
       try {
         let finalPrompt = description;
 
-        // 1. Geminiで英語化を試みる（失敗しても元の文字列で続行する安全設計）
+        // 1. Geminiで英語化（失敗したら元の日本語を使用）
         try {
           const translatePrompt = `Translate and expand the following description into a concise English image generation prompt (max 30 words, single line, no quotes, no markdown): "${description}"`;
           const genModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
           const translationResult = await genModel.generateContent(translatePrompt);
           const translatedText = translationResult.response.text().trim();
 
-          // 改行や引用符を取り除いてクリーンにする
           if (translatedText) {
             finalPrompt = translatedText.replace(/[\r\n"']/g, ' ');
           }
         } catch (translationErr) {
-          console.warn('⚠️ [IMAGE GEN] Translation failed, fallback to raw input:', translationErr);
+          console.warn('⚠️ [IMAGE GEN] Translation fallback:', translationErr);
         }
 
-        console.log(`[IMAGE GEN] Original: "${description}" -> Final: "${finalPrompt}"`);
-
-        // 2. 安全にエンコード
+        // 2. URLの生成（botでfetchせず、Discordに直接画像を描画させる）
         const encodedPrompt = encodeURIComponent(finalPrompt);
         const seed = Math.floor(Math.random() * 1000000);
-
-        // 3. Pollinations API (新しい高速エンドポイントを使用)
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
 
-        // 4. 画像の取得（タイムアウト処理つき）
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒でタイムアウト
-
-        const imageResponse = await fetch(imageUrl, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-        }).catch((err) => {
-          console.error('Fetch failed:', err);
-          return null;
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!imageResponse || !imageResponse.ok) {
-          const statusMsg = imageResponse ? `${imageResponse.status} ${imageResponse.statusText}` : 'No Response / Timeout';
-          throw new Error(`API Error: ${statusMsg}`);
-        }
-
-        const arrayBuffer = await imageResponse.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
+        // 3. Embedを作成して直接URLを設定
         const embed = new EmbedBuilder()
           .setTitle('🎨 画像生成結果')
           .setDescription(`**入力:** ${description}\n**最適化プロンプト:** \`${finalPrompt}\``)
-          .setImage('attachment://generated_image.png')
+          .setImage(imageUrl) // URLを直接指定してDiscord側に読み込ませる
           .setColor('#00ffcc')
           .setFooter({ text: 'Powered by Pollinations.ai' });
 
         await interaction.editReply({
-          embeds: [embed],
-          files: [{ attachment: buffer, name: 'generated_image.png' }]
+          embeds: [embed]
         });
 
       } catch (err) {
         console.error('❌ [IMAGE GENERATION ERROR]:', err);
         await interaction.editReply({
-          content: `${EMOJI_ERROR} **画像生成に失敗しました**\n\`\`\`js\n${err.message || err}\n\`\`\`\n※外部サーバーがタイムアウトしたか混雑しています。時間を置くか、別の単語で試してください。`
+          content: `${EMOJI_ERROR} **コマンドの実行中にエラーが発生しました**\n\`\`\`js\n${err.message || err}\n\`\`\``
         }).catch(console.error);
       }
       return;
