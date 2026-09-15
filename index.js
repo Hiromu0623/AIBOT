@@ -36,9 +36,9 @@ server.listen(PORT, '0.0.0.0', () => {
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
 // 絵文字の表示崩れを防ぐため標準絵文字に設定
-const EMOJI_LOADING = '⏳';
-const EMOJI_ERROR = '❌';
-const EMOJI_INFO = 'ℹ️';
+const EMOJI_LOADING = '<a:loading:1548168752917647421>';
+const EMOJI_ERROR = '<a:error:1545303132358311997>';
+const EMOJI_INFO = '<:info:1545303757796024330>';
 
 // お知らせ配信の除外サーバー設定
 const EXCLUDED_GUILD_ID = '1470380389561405554';
@@ -393,7 +393,7 @@ client.on('interactionCreate', async (interaction) => {
       const modeData = BOT_MODES[selectedCategory];
 
       await interaction.reply({
-        content: `🎭 喋り方モードを「**${modeData.name}**」に変更したよ！`,
+        content: `🎭 喋り方モードを「**${modeData.name}**」に変更しました！`,
       }).catch(console.error);
       return;
     }
@@ -404,10 +404,16 @@ client.on('interactionCreate', async (interaction) => {
       const description = interaction.options.getString('description');
 
       const encodedPrompt = encodeURIComponent(description);
-      const imageUrl = `https://pollinations.ai/p/${encodedPrompt}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&nologo=true`;
+      // 新しいエンドポイント URL: https://image.pollinations.ai/prompt/...
+      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&nologo=true`;
 
       try {
-        const imageResponse = await fetch(imageUrl);
+        // Fetch時に User-Agent を設定してリクエスト拒否を防ぐ
+        const imageResponse = await fetch(imageUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        });
 
         if (!imageResponse.ok) {
           throw new Error(`HTTP Status Error: ${imageResponse.status} ${imageResponse.statusText}`);
