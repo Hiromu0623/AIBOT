@@ -17,7 +17,7 @@ import { GoogleGenAI } from '@google/genai';
 import 'dotenv/config';
 
 // -------------------------------------------------------------
-// 1. Render の Port 検出・スリープ回避用 HTTP サーバー (最優先起動)
+// 1. Render の Port 検出・スリープ回避用 HTTP サーバー
 // -------------------------------------------------------------
 const PORT = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
@@ -34,14 +34,12 @@ server.listen(PORT, '0.0.0.0', () => {
 // -------------------------------------------------------------
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
-// ★カスタム絵文字の定義
-const EMOJI_LOADING = '<a:loading:1548168752917647421>';
+const EMOJI_LOADING = '<a:loading:1545302736684322926>';
 const EMOJI_ERROR = '<a:error:1545303132358311997>';
 const EMOJI_INFO = '<:info:1545303757796024330>';
 
-// ★お知らせ配信の制御設定
-const EXCLUDED_GUILD_ID = '1470380389561405554'; // 絶対に除外するサーバーID
-const ENABLE_EXCLUDED_GUILD_ANNOUNCEMENT = false; // trueにすると除外サーバーにも送る / falseだと送らない
+// お知らせ配信の除外サーバー設定
+const EXCLUDED_GUILD_ID = '1470380389561405554';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const client = new Client({
@@ -50,12 +48,13 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildPresences, // 作者のオンライン状態取得用
+    GatewayIntentBits.GuildPresences,
   ],
 });
 
-// 会話記憶・ステータス管理用変数
+// 会話記憶・ステータス・モード管理用変数
 const serverHistories = new Map();
+const serverModes = new Map(); // サーバーごとの喋り方モード保存用
 const MAX_HISTORY = 5;
 
 const requestTimestamps = [];
@@ -64,36 +63,35 @@ const GEMINI_RPM_LIMIT = 15;
 let isProcessing = false;
 
 // エラーカウント用変数
-let apiErrorCount = 0;       // 429等のAPIエラー
-let congestionErrorCount = 0; // 503混雑エラー
+let apiErrorCount = 0;
+let congestionErrorCount = 0;
 
 // /bot-info の各サーバー最新メッセージ管理 Map
 const activeInfoMessages = new Map();
 
-// -------------------------------------------------------------
-// 管理パネル (Admin Panel) 用の各種管理変数
-// -------------------------------------------------------------
-const startTime = Date.now(); // 稼働時間計測用
-let totalCommandCount = 0;   // 累計コマンド・会話実行回数
-
-// 管理パネルの表示メッセージ保持 (削除用)
+// 管理パネル関連変数
+const startTime = Date.now();
+let totalCommandCount = 0;
 let lastAdminMessage = null;
-
-// 管理者の操作ステップ管理: null | 'panel' | 'server' | 'all'
 let adminState = null;
+let isAllStopped = false;
+const stoppedGuilds = new Set();
 
-// 停止状態フラグ
-let isAllStopped = false;            // 全サーバー停止
-const stoppedGuilds = new Set();     // 特定サーバー停止 (Guild ID)
+// モード定義とプロンプト
+const BOT_MODES = {
+  normal: { name: '通常モード', prompt: '' },
+  tsundere: { name: 'ツンデレ', prompt: 'あなたはツンデレな性格です。少し素直になれず強がりな態度を取りつつも、最終的には親切に答えてください。' },
+  kansai: { name: '関西弁', prompt: 'あなたは明るい関西人です。コテコテの関西弁でフレンドリーに回答してください。' },
+  keigo: { name: '敬語', prompt: 'あなたは非常に丁寧で礼儀正しい秘書です。極めて丁寧な敬語（最高敬語）で回答してください。' },
+  gal: { name: 'ギャル', prompt: 'あなたはテンションが高い現代のギャルです。ギャル語や絵文字、小文字を交えてノリ良く回答してください。' },
+  nekomimi: { name: '猫耳少女', prompt: 'あなたはかわいい猫耳少女です。語尾に「〜にゃ」「〜にゃん」をつけて可愛らしく回答してください。' },
+};
 
-// Admin Panel メッセージの削除＆新規送信共通処理
 async function sendAdminPanelMessage(channel, embed) {
   if (lastAdminMessage) {
     try {
       await lastAdminMessage.delete();
-    } catch (e) {
-      // 既に削除されている場合などは無視
-    }
+    } catch (e) {}
     lastAdminMessage = null;
   }
   const sentMsg = await channel.send({ embeds: [embed] }).catch(console.error);
@@ -103,7 +101,6 @@ async function sendAdminPanelMessage(channel, embed) {
   return sentMsg;
 }
 
-// 稼働時間のフォーマット関数
 function getUptimeString() {
   const diff = Math.floor((Date.now() - startTime) / 1000);
   const days = Math.floor(diff / 86400);
@@ -113,7 +110,6 @@ function getUptimeString() {
   return `${days}日 ${hours}時間 ${minutes}分 ${seconds}秒`;
 }
 
-// サーバーのデフォルト送信先チャンネル取得関数
 async function getDefaultChannel(guild) {
   const channels = await guild.channels.fetch().catch(() => guild.channels.cache);
   let targetChannel = guild.systemChannel;
@@ -129,7 +125,6 @@ async function getDefaultChannel(guild) {
   return targetChannel;
 }
 
-// ステータス更新関数
 function updateBotStatus() {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
@@ -143,23 +138,23 @@ function updateBotStatus() {
   client.user.setActivity(statusText, { type: ActivityType.Custom });
 }
 
-// 共通ヘルプEmbed
 function createHelpEmbed() {
   return new EmbedBuilder()
     .setTitle('📖 AI Bot ヘルプ & 使い方ガイド')
     .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
     .addFields(
-      { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信（リプライ）して話しかけてください。' },
+      { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信して話しかけてください。' },
+      { name: '🎭 語尾・口調変更', value: '「`/bot-mode`」でAIの喋り方（ツンデレ、関西弁、ギャル等）を変更できます。' },
+      { name: '🎨 画像生成', value: '「`/bot-image-create <説明>`」でプロンプトから画像を自動生成します。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
       { name: '📊 ステータス確認', value: '「`/bot-info`」で現在のBotのリアルタイム情報を表示します。' },
-      { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、このサーバーでの会話履歴を初期化します。' },
-      { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドを実行すると、開発者へ質問や提案を送信できます。' }
+      { name: '脳 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、会話履歴を初期化します。' },
+      { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドで開発者へ直接質問できます。' }
     )
     .setColor('#5865F2')
     .setFooter({ text: 'サーバーごとに独立した会話記憶を保持しています' });
 }
 
-// 作者のステータス文字列を取得する関数
 async function getAuthorStatus(guild) {
   try {
     let authorMember = null;
@@ -190,7 +185,6 @@ async function getAuthorStatus(guild) {
   }
 }
 
-// /bot-info 用 Embed 生成関数
 async function createInfoEmbed(guild) {
   const now = Date.now();
   while (requestTimestamps.length > 0 && requestTimestamps[0] < now - 60000) {
@@ -221,7 +215,6 @@ async function createInfoEmbed(guild) {
     .setTimestamp();
 }
 
-// 503混雑エラー発生時の自動リトライ付き API 実行関数
 async function generateContentWithRetry(ai, params, retries = 2, delay = 2000) {
   for (let i = 0; i <= retries; i++) {
     try {
@@ -229,7 +222,6 @@ async function generateContentWithRetry(ai, params, retries = 2, delay = 2000) {
     } catch (err) {
       const errStr = String(err.message || err);
       if ((errStr.includes('503') || errStr.includes('UNAVAILABLE')) && i < retries) {
-        console.log(`⚠️ 503混雑エラー発生。${delay / 1000}秒後に自動リトライします... (${i + 1}/${retries})`);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
@@ -239,19 +231,46 @@ async function generateContentWithRetry(ai, params, retries = 2, delay = 2000) {
 }
 
 // -------------------------------------------------------------
-// 3. Ready イベント
+// 3. Ready イベント & スラッシュコマンド登録
 // -------------------------------------------------------------
 client.once('clientReady', async () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
   updateBotStatus();
 
-  // スラッシュコマンド登録
   try {
     const commands = [
       new SlashCommandBuilder().setName('help').setDescription('Botの使い方やヘルプを表示します'),
       new SlashCommandBuilder().setName('bot-info').setDescription('Botのリアルタイム情報（Ping、残り回答数等）を表示します'),
       new SlashCommandBuilder().setName('bot-question').setDescription('開発者へ質問や提案を送信します'),
       new SlashCommandBuilder().setName('bot-questionnaire').setDescription('Botのアンケートに回答します'),
+      
+      // モード変更コマンド
+      new SlashCommandBuilder()
+        .setName('bot-mode')
+        .setDescription('AIの喋り方モードを変更します')
+        .addStringOption(option =>
+          option.setName('category')
+            .setDescription('喋り方のカテゴリーを選択してください')
+            .setRequired(true)
+            .addChoices(
+              { name: '通常モード', value: 'normal' },
+              { name: 'ツンデレ', value: 'tsundere' },
+              { name: '関西弁', value: 'kansai' },
+              { name: '敬語', value: 'keigo' },
+              { name: 'ギャル', value: 'gal' },
+              { name: '猫耳少女', value: 'nekomimi' }
+            )
+        ),
+
+      // 画像生成コマンド
+      new SlashCommandBuilder()
+        .setName('bot-image-create')
+        .setDescription('キーワードや説明文から画像を生成します')
+        .addStringOption(option =>
+          option.setName('description')
+            .setDescription('生成したい画像の説明文を入力してください')
+            .setRequired(true)
+        ),
     ];
 
     await client.application.commands.set(commands);
@@ -260,19 +279,12 @@ client.once('clientReady', async () => {
     console.error('コマンド登録エラー:', cmdErr);
   }
 
-  console.log('--------------------------------------------------');
-  console.log(`🏠 導入中のサーバー一覧 (全 ${client.guilds.cache.size} サーバー):`);
-  client.guilds.cache.forEach((guild) => {
-    console.log(` - サーバー名: ${guild.name} (ID: ${guild.id}) | メンバー数: ${guild.memberCount}`);
-  });
-  console.log('--------------------------------------------------');
-
   setInterval(updateBotStatus, 30000);
   console.log('✅ Botが正常に起動しました！');
 });
 
 // -------------------------------------------------------------
-// 4. インタラクション処理（ボタン、モーダル、コマンド）
+// 4. インタラクション処理（Slash Command / Modal / Button）
 // -------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isChatInputCommand()) {
@@ -283,9 +295,11 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // --- /bot-info コマンドの更新処理 ---
     if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
+      // 既存の定期更新タイマーと過去のメッセージがあれば削除
       if (activeInfoMessages.has(guildId)) {
         const oldData = activeInfoMessages.get(guildId);
         clearInterval(oldData.intervalId);
@@ -299,9 +313,9 @@ client.on('interactionCreate', async (interaction) => {
         } catch (e) {}
       }
 
+      await interaction.deferReply();
       const initialEmbed = await createInfoEmbed(interaction.guild);
-      const response = await interaction.reply({ embeds: [initialEmbed], withResponse: true }).catch(console.error);
-      const replyMsg = response?.resource?.message;
+      const replyMsg = await interaction.editReply({ embeds: [initialEmbed] }).catch(console.error);
 
       if (replyMsg) {
         const intervalId = setInterval(async () => {
@@ -320,6 +334,39 @@ client.on('interactionCreate', async (interaction) => {
           intervalId: intervalId,
         });
       }
+      return;
+    }
+
+    // --- /bot-mode (喋り方切り替え) ---
+    if (interaction.commandName === 'bot-mode') {
+      const selectedCategory = interaction.options.getString('category');
+      const contextKey = interaction.guildId ? `guild_${interaction.guildId}` : `dm_${interaction.user.id}`;
+
+      serverModes.set(contextKey, selectedCategory);
+      const modeData = BOT_MODES[selectedCategory];
+
+      await interaction.reply({
+        content: `🎭 喋り方モードを「**${modeData.name}**」に変更したよ！`,
+      }).catch(console.error);
+      return;
+    }
+
+    // --- /bot-image-create (画像生成) ---
+    if (interaction.commandName === 'bot-image-create') {
+      await interaction.deferReply();
+      const description = interaction.options.getString('description');
+
+      const encodedPrompt = encodeURIComponent(description);
+      const imageUrl = `https://pollinations.ai/p/${encodedPrompt}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&nologo=true`;
+
+      const embed = new EmbedBuilder()
+        .setTitle('🎨 画像生成結果')
+        .setDescription(`**説明:** ${description}`)
+        .setImage(imageUrl)
+        .setColor('#00ffcc')
+        .setFooter({ text: 'Powered by Pollinations.ai' });
+
+      await interaction.editReply({ embeds: [embed] }).catch(console.error);
       return;
     }
 
@@ -443,29 +490,25 @@ client.on('interactionCreate', async (interaction) => {
         await targetUser.send({ embeds: [dmEmbed] });
         await interaction.editReply({ content: `✅ <@${targetUserId}> への返信DMを正常に送信しました！` });
       } catch (err) {
-        console.error('ユーザーへのDM返信失敗:', err);
-        await interaction.editReply({ content: `❌ <@${targetUserId}> へのDM送信に失敗しました。（DMを受け取らない設定にしている可能性があります）` });
+        await interaction.editReply({ content: `❌ <@${targetUserId}> へのDM送信に失敗しました。` });
       }
     }
   }
 });
 
 // -------------------------------------------------------------
-// 5. 通常メッセージ処理（管理パネル・会話等）
+// 5. 通常メッセージ処理（管理パネル・会話）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const contentTrimmed = message.content.trim();
 
-  // -----------------------------------------------------------
   // A. 管理者専用 管理パネル機能 (Admin Panel)
-  // -----------------------------------------------------------
   if (contentTrimmed.startsWith('!AI ')) {
     const args = contentTrimmed.slice(4).trim().split(/\s+/);
     const subCommand = args[0] ? args[0].toLowerCase() : '';
 
-    // 管理者権限チェック
     if (message.author.id !== AUTHOR_ID) {
       await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
       return;
@@ -473,7 +516,6 @@ client.on('messageCreate', async (message) => {
 
     totalCommandCount++;
 
-    // 1. !AI AdminPanel (メインパネル開く)
     if (subCommand === 'adminpanel') {
       adminState = 'panel';
       const embed = new EmbedBuilder()
@@ -490,7 +532,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 2. !AI Cancel (パネル閉じる)
     if (subCommand === 'cancel') {
       if (adminState !== null) {
         adminState = null;
@@ -504,13 +545,11 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 3. !AI server 関連機能
     if (subCommand === 'server') {
       if (adminState !== 'panel' && adminState !== 'server') return;
 
       const action = args[1] ? args[1].toLowerCase() : '';
 
-      // サブアクションなし: メニューを表示して状態変更
       if (!action) {
         adminState = 'server';
         const embed = new EmbedBuilder()
@@ -527,7 +566,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // 状態が 'server' の場合のみアクションを実行可能
       if (adminState === 'server') {
         const guild = message.guild;
 
@@ -600,13 +638,11 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 4. !AI All 関連機能
     if (subCommand === 'all') {
       if (adminState !== 'panel' && adminState !== 'all') return;
 
       const action = args[1] ? args[1].toLowerCase() : '';
 
-      // サブアクションなし: メニューを表示して状態変更
       if (!action) {
         adminState = 'all';
         const embed = new EmbedBuilder()
@@ -623,7 +659,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // 状態が 'all' の場合のみアクションを実行可能
       if (adminState === 'all') {
         if (action === 'stop') {
           isAllStopped = true;
@@ -645,6 +680,7 @@ client.on('messageCreate', async (message) => {
           return;
         }
 
+        // --- !AI All Send <メッセージ>（免除サーバーの除外対応） ---
         if (action === 'send') {
           const sendText = args.slice(2).join(' ');
           if (!sendText) {
@@ -658,6 +694,9 @@ client.on('messageCreate', async (message) => {
 
           let successCount = 0;
           for (const guild of client.guilds.cache.values()) {
+            // 免除対象サーバーのチェック
+            if (guild.id === EXCLUDED_GUILD_ID) continue;
+
             const targetCh = await getDefaultChannel(guild);
             if (targetCh) {
               await targetCh.send(sendText).catch(() => null);
@@ -667,7 +706,7 @@ client.on('messageCreate', async (message) => {
 
           const embed = new EmbedBuilder()
             .setTitle('⚙️ All AIBOT Settings')
-            .setDescription(`📢 ${successCount} 個のサーバーに一斉メッセージを送信しました。`)
+            .setDescription(`📢 ${successCount} 個のサーバーに一斉メッセージを送信しました。（除外サーバーはスキップされました）`)
             .setColor('#00ff00');
           await sendAdminPanelMessage(message.channel, embed);
           return;
@@ -689,7 +728,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 5. !AI Info (詳細 Bot 情報・要約機能付き)
     if (subCommand === 'info') {
       if (adminState !== 'panel') return;
 
@@ -702,7 +740,6 @@ client.on('messageCreate', async (message) => {
       const totalErrors = apiErrorCount + congestionErrorCount;
       const uptimeStr = getUptimeString();
 
-      // 各サーバーの会話ログをまとめる
       let rawConversations = '';
       for (const [key, history] of serverHistories.entries()) {
         if (history.length > 0) {
@@ -725,7 +762,6 @@ client.on('messageCreate', async (message) => {
           });
           aiSummary = summaryRes.text || '要約の取得に失敗しました。';
         } catch (sumErr) {
-          console.error('要約エラー:', sumErr);
           aiSummary = '要約処理中にエラーが発生しました。';
         }
       }
@@ -747,13 +783,10 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ※単体の `!AI <メッセージ>` お知らせ一斉送信機能は廃止したため、定義されていないサブコマンドは無視されます。
     return;
   }
 
-  // -----------------------------------------------------------
-  // B. 通常メッセージ・会話処理
-  // -----------------------------------------------------------
+  // B. 通常会話処理
   const prompt = message.content.replace(/<@[!&]?\d+>/g, '').replace(/<#\d+>/g, '').trim();
 
   if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
@@ -775,7 +808,6 @@ client.on('messageCreate', async (message) => {
 
   if (!isMentioned && !isReplyToBot) return;
 
-  // ★ 停止設定のチェック (Stop機能有効時は応答しない)
   if (isAllStopped) return;
   if (message.guild && stoppedGuilds.has(message.guild.id)) return;
 
@@ -858,12 +890,22 @@ client.on('messageCreate', async (message) => {
     requestTimestamps.push(Date.now());
     updateBotStatus();
 
+    // モード（語尾・口調）設定の適用
+    const currentModeKey = serverModes.get(contextKey) || 'normal';
+    const currentModePrompt = BOT_MODES[currentModeKey]?.prompt || '';
+
+    const configOptions = {
+      tools: [{ googleSearch: {} }],
+    };
+
+    if (currentModePrompt) {
+      configOptions.systemInstruction = currentModePrompt;
+    }
+
     const response = await generateContentWithRetry(ai, {
       model: 'gemini-2.5-flash',
       contents: history,
-      config: {
-        tools: [{ googleSearch: {} }],
-      },
+      config: configOptions,
     });
 
     const replyText = response.text || '（返答を取得できませんでした）';
@@ -920,7 +962,6 @@ client.on('messageCreate', async (message) => {
       await sendErrorReply(
         `${EMOJI_ERROR} **Gemini サーバー混雑エラー (503)**\n` +
         `現在、Gemini のサーバーが混み合っています。\n` +
-        `📍 **発生場所**: サーバー「**${guildName}**」 / チャンネル「**#${channelName}**」\n` +
         `少し時間をおいてから再度お試しください。`
       );
       return;
@@ -928,37 +969,15 @@ client.on('messageCreate', async (message) => {
 
     if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
       apiErrorCount++;
-      let retryTime = '不明（少し待ってからお試しください）';
-      const retryMatch = errorStr.match(/"retryDelay"\s*:\s*"([^"]+)"/) || errorStr.match(/Please retry in ([^\s]+)/);
-      if (retryMatch && retryMatch[1]) retryTime = retryMatch[1];
-
       await sendErrorReply(
         `${EMOJI_ERROR} **API利用制限エラー (429)**\n` +
-        `無料枠のリクエスト上限に達しました。\n` +
-        `⏱️ **再試行までの目安時間**: \`${retryTime}\``
+        `無料枠のリクエスト上限に達しました。`
       );
       return;
     }
 
     apiErrorCount++;
     await sendErrorReply(`${EMOJI_ERROR} **予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
-
-    try {
-      const author = await client.users.fetch(AUTHOR_ID);
-      const errEmbed = new EmbedBuilder()
-        .setTitle('🚨 未知のBotエラーが発生しました')
-        .addFields(
-          { name: '発生サーバー', value: `${guildName} (${message.guild?.id || 'DM'})` },
-          { name: '発生チャンネル', value: `#${channelName}` },
-          { name: '実行ユーザー', value: `${message.author.tag} (${message.author.id})` },
-          { name: 'エラー内容', value: `\`\`\`js\n${errorStr.slice(0, 1000)}\n\`\`\`` }
-        )
-        .setColor('#ff0000')
-        .setTimestamp();
-      await author.send({ embeds: [errEmbed] });
-    } catch (dmErr) {
-      console.error('開発者へのエラーDM通知失敗:', dmErr);
-    }
 
   } finally {
     isProcessing = false;
