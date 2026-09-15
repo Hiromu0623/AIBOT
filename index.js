@@ -403,15 +403,19 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
 
+      // プロンプトを安全にエンコード（特殊文字対応）
       const encodedPrompt = encodeURIComponent(description);
-      // 新しいエンドポイント URL: https://image.pollinations.ai/prompt/...
-      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&nologo=true`;
+      const seed = Math.floor(Math.random() * 1000000);
+      
+      // Pollinations.ai の最新で安定した画像生成API URL
+      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
 
       try {
-        // Fetch時に User-Agent を設定してリクエスト拒否を防ぐ
         const imageResponse = await fetch(imageUrl, {
+          method: 'GET',
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           },
         });
 
@@ -439,9 +443,8 @@ client.on('interactionCreate', async (interaction) => {
         console.error(`Prompt: ${description}`);
         console.error(err);
 
-        const errorMessage = err.message || '不明なエラーが発生しました';
         await interaction.editReply({
-          content: `${EMOJI_ERROR} **画像生成中にエラーが発生しました**\n\`\`\`js\n${errorMessage.slice(0, 1800)}\n\`\`\``
+          content: `${EMOJI_ERROR} **画像生成に失敗しました (Pollinations サーバーエラー)**\n外部の画像生成サービスが一時的に混雑またはメンテナンス中です。時間を置いて再度お試しいただくか、プロンプトを詳しく（英語にするなど）書いて試してみてください。`
         }).catch(console.error);
       }
       return;
