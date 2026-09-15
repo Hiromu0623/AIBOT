@@ -404,28 +404,51 @@ client.on('interactionCreate', async (interaction) => {
       const description = interaction.options.getString('description');
 
       try {
-        // 1. Geminiを使って日本語プロンプトを「画像生成用英語」に変換
-        const translatePrompt = `以下のテキストを、画像生成AI（Pollinations.ai）に入力するための詳細な英語のプロンプトに変換してください。余計な解説は出力せず、プロンプトの英文のみを返してください。\n\n入力: ${description}`;
-        const genModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const translationResult = await genModel.generateContent(translatePrompt);
-        const translatedPrompt = translationResult.response.text().trim();
+        let finalPrompt = description;
 
-        console.log(`[IMAGE GEN] Original: "${description}" -> Translated: "${translatedPrompt}"`);
+        // 1. Geminiで英語化を試みる（失敗しても元の文字列で続行する安全設計）
+        try {
+          const translatePrompt = `Translate and expand the following description into a concise English image generation prompt (max 30 words, single line, no quotes, no markdown): "${description}"`;
+          const genModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+          const translationResult = await genModel.generateContent(translatePrompt);
+          const translatedText = translationResult.response.text().trim();
 
-        // 2. 翻訳後の英語プロンプトをエンコード
-        const encodedPrompt = encodeURIComponent(translatedPrompt);
+          // 改行や引用符を取り除いてクリーンにする
+          if (translatedText) {
+            finalPrompt = translatedText.replace(/[\r\n"']/g, ' ');
+          }
+        } catch (translationErr) {
+          console.warn('⚠️ [IMAGE GEN] Translation failed, fallback to raw input:', translationErr);
+        }
+
+        console.log(`[IMAGE GEN] Original: "${description}" -> Final: "${finalPrompt}"`);
+
+        // 2. 安全にエンコード
+        const encodedPrompt = encodeURIComponent(finalPrompt);
         const seed = Math.floor(Math.random() * 1000000);
 
-        // 3. 画像URL生成 (英語プロンプトを使用)
+        // 3. Pollinations API (新しい高速エンドポイントを使用)
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
 
-        // 4. 画像を取得
-        let imageResponse = await fetch(imageUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        }).catch(() => null);
+        // 4. 画像の取得（タイムアウト処理つき）
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒でタイムアウト
+
+        const imageResponse = await fetch(imageUrl, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        }).catch((err) => {
+          console.error('Fetch failed:', err);
+          return null;
+        });
+
+        clearTimeout(timeoutId);
 
         if (!imageResponse || !imageResponse.ok) {
-          throw new Error('画像生成サーバーからのレスポンス取得に失敗しました。');
+          const statusMsg = imageResponse ? `${imageResponse.status} ${imageResponse.statusText}` : 'No Response / Timeout';
+          throw new Error(`API Error: ${statusMsg}`);
         }
 
         const arrayBuffer = await imageResponse.arrayBuffer();
@@ -433,7 +456,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const embed = new EmbedBuilder()
           .setTitle('🎨 画像生成結果')
-          .setDescription(`**入力:** ${description}\n**最適化プロンプト:** \`${translatedPrompt}\``)
+          .setDescription(`**入力:** ${description}\n**最適化プロンプト:** \`${finalPrompt}\``)
           .setImage('attachment://generated_image.png')
           .setColor('#00ffcc')
           .setFooter({ text: 'Powered by Pollinations.ai' });
@@ -446,7 +469,7 @@ client.on('interactionCreate', async (interaction) => {
       } catch (err) {
         console.error('❌ [IMAGE GENERATION ERROR]:', err);
         await interaction.editReply({
-          content: `${EMOJI_ERROR} **画像生成に失敗しました**\n一時的にサービスが混雑しているか、エラーが発生しました。時間を置いて再度お試しください。`
+          content: `${EMOJI_ERROR} **画像生成に失敗しました**\n\`\`\`js\n${err.message || err}\n\`\`\`\n※外部サーバーがタイムアウトしたか混雑しています。時間を置くか、別の単語で試してください。`
         }).catch(console.error);
       }
       return;
