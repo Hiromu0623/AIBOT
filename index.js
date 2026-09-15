@@ -398,29 +398,34 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-image-create ---
+   // --- /bot-image-create ---
     if (interaction.commandName === 'bot-image-create') {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
 
-      // プロンプトを安全にエンコード（特殊文字対応）
-      const encodedPrompt = encodeURIComponent(description);
-      const seed = Math.floor(Math.random() * 1000000);
-      
-      // Pollinations.ai の最新で安定した画像生成API URL
-      const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
-
       try {
-        const imageResponse = await fetch(imageUrl, {
-          method: 'GET',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          },
-        });
+        // 1. Geminiを使って日本語プロンプトを「画像生成用英語」に変換
+        const translatePrompt = `以下のテキストを、画像生成AI（Pollinations.ai）に入力するための詳細な英語のプロンプトに変換してください。余計な解説は出力せず、プロンプトの英文のみを返してください。\n\n入力: ${description}`;
+        const genModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const translationResult = await genModel.generateContent(translatePrompt);
+        const translatedPrompt = translationResult.response.text().trim();
 
-        if (!imageResponse.ok) {
-          throw new Error(`HTTP Status Error: ${imageResponse.status} ${imageResponse.statusText}`);
+        console.log(`[IMAGE GEN] Original: "${description}" -> Translated: "${translatedPrompt}"`);
+
+        // 2. 翻訳後の英語プロンプトをエンコード
+        const encodedPrompt = encodeURIComponent(translatedPrompt);
+        const seed = Math.floor(Math.random() * 1000000);
+
+        // 3. 画像URL生成 (英語プロンプトを使用)
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
+
+        // 4. 画像を取得
+        let imageResponse = await fetch(imageUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        }).catch(() => null);
+
+        if (!imageResponse || !imageResponse.ok) {
+          throw new Error('画像生成サーバーからのレスポンス取得に失敗しました。');
         }
 
         const arrayBuffer = await imageResponse.arrayBuffer();
@@ -428,7 +433,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const embed = new EmbedBuilder()
           .setTitle('🎨 画像生成結果')
-          .setDescription(`**説明:** ${description}`)
+          .setDescription(`**入力:** ${description}\n**最適化プロンプト:** \`${translatedPrompt}\``)
           .setImage('attachment://generated_image.png')
           .setColor('#00ffcc')
           .setFooter({ text: 'Powered by Pollinations.ai' });
@@ -439,12 +444,9 @@ client.on('interactionCreate', async (interaction) => {
         });
 
       } catch (err) {
-        console.error('❌ [IMAGE GENERATION ERROR]');
-        console.error(`Prompt: ${description}`);
-        console.error(err);
-
+        console.error('❌ [IMAGE GENERATION ERROR]:', err);
         await interaction.editReply({
-          content: `${EMOJI_ERROR} **画像生成に失敗しました (Pollinations サーバーエラー)**\n外部の画像生成サービスが一時的に混雑またはメンテナンス中です。時間を置いて再度お試しいただくか、プロンプトを詳しく（英語にするなど）書いて試してみてください。`
+          content: `${EMOJI_ERROR} **画像生成に失敗しました**\n一時的にサービスが混雑しているか、エラーが発生しました。時間を置いて再度お試しください。`
         }).catch(console.error);
       }
       return;
