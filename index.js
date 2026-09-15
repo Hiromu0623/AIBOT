@@ -34,9 +34,10 @@ server.listen(PORT, '0.0.0.0', () => {
 // -------------------------------------------------------------
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
-const EMOJI_LOADING = '<a:loading:1545302736684322926>';
-const EMOJI_ERROR = '<a:error:1545303132358311997>';
-const EMOJI_INFO = '<:info:1545303757796024330>';
+// 絵文字の表示崩れを防ぐため標準絵文字に設定
+const EMOJI_LOADING = '⏳';
+const EMOJI_ERROR = '❌';
+const EMOJI_INFO = 'ℹ️';
 
 // お知らせ配信の除外サーバー設定
 const EXCLUDED_GUILD_ID = '1470380389561405554';
@@ -148,7 +149,7 @@ function createHelpEmbed() {
       { name: '🎨 画像生成', value: '「`/bot-image-create <説明>`」でプロンプトから画像を自動生成します。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
       { name: '📊 ステータス確認', value: '「`/bot-info`」で現在のBotのリアルタイム情報を表示します。' },
-      { name: '脳 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、会話履歴を初期化します。' },
+      { name: '🧠 記憶リセット', value: '「`リセット`」または「`forget`」と送信すると、会話履歴を初期化します。' },
       { name: '❓ 質問・提案を送る', value: '「`/bot-question`」コマンドで開発者へ直接質問できます。' }
     )
     .setColor('#5865F2')
@@ -295,11 +296,10 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-info コマンドの更新処理 ---
+    // --- /bot-info コマンド（旧メッセージ削除＆10秒自動更新） ---
     if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
-      // 既存の定期更新タイマーと過去のメッセージがあれば削除
       if (activeInfoMessages.has(guildId)) {
         const oldData = activeInfoMessages.get(guildId);
         clearInterval(oldData.intervalId);
@@ -351,7 +351,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-image-create (画像生成) ---
+    // --- /bot-image-create (画像生成 & 直接ファイル送信 & エラーログ詳細化) ---
     if (interaction.commandName === 'bot-image-create') {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
@@ -359,14 +359,40 @@ client.on('interactionCreate', async (interaction) => {
       const encodedPrompt = encodeURIComponent(description);
       const imageUrl = `https://pollinations.ai/p/${encodedPrompt}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&nologo=true`;
 
-      const embed = new EmbedBuilder()
-        .setTitle('🎨 画像生成結果')
-        .setDescription(`**説明:** ${description}`)
-        .setImage(imageUrl)
-        .setColor('#00ffcc')
-        .setFooter({ text: 'Powered by Pollinations.ai' });
+      try {
+        const imageResponse = await fetch(imageUrl);
 
-      await interaction.editReply({ embeds: [embed] }).catch(console.error);
+        if (!imageResponse.ok) {
+          throw new Error(`HTTP Status Error: ${imageResponse.status} ${imageResponse.statusText}`);
+        }
+
+        const arrayBuffer = await imageResponse.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 画像生成結果')
+          .setDescription(`**説明:** ${description}`)
+          .setImage('attachment://generated_image.png')
+          .setColor('#00ffcc')
+          .setFooter({ text: 'Powered by Pollinations.ai' });
+
+        await interaction.editReply({
+          embeds: [embed],
+          files: [{ attachment: buffer, name: 'generated_image.png' }]
+        });
+
+      } catch (err) {
+        // Render ログにエラーの発生状況を詳細に出力
+        console.error('❌ [IMAGE GENERATION ERROR]');
+        console.error(`Prompt: ${description}`);
+        console.error(err);
+
+        // Discordメッセージ上にも具体的なエラー内容を表示
+        const errorMessage = err.message || '不明なエラーが発生しました';
+        await interaction.editReply({
+          content: `${EMOJI_ERROR} **画像生成中にエラーが発生しました**\n\`\`\`js\n${errorMessage.slice(0, 1800)}\n\`\`\``
+        }).catch(console.error);
+      }
       return;
     }
 
@@ -680,7 +706,6 @@ client.on('messageCreate', async (message) => {
           return;
         }
 
-        // --- !AI All Send <メッセージ>（免除サーバーの除外対応） ---
         if (action === 'send') {
           const sendText = args.slice(2).join(' ');
           if (!sendText) {
@@ -694,7 +719,6 @@ client.on('messageCreate', async (message) => {
 
           let successCount = 0;
           for (const guild of client.guilds.cache.values()) {
-            // 免除対象サーバーのチェック
             if (guild.id === EXCLUDED_GUILD_ID) continue;
 
             const targetCh = await getDefaultChannel(guild);
@@ -890,7 +914,6 @@ client.on('messageCreate', async (message) => {
     requestTimestamps.push(Date.now());
     updateBotStatus();
 
-    // モード（語尾・口調）設定の適用
     const currentModeKey = serverModes.get(contextKey) || 'normal';
     const currentModePrompt = BOT_MODES[currentModeKey]?.prompt || '';
 
@@ -946,8 +969,6 @@ client.on('messageCreate', async (message) => {
     }
 
     const errorStr = String(error.message || error);
-    const guildName = message.guild ? message.guild.name : 'ダイレクトメッセージ';
-    const channelName = message.channel ? (message.channel.name || 'DM') : '不明';
 
     const sendErrorReply = async (content) => {
       if (loadingMsg) {
