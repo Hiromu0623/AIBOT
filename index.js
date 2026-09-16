@@ -35,7 +35,7 @@ server.listen(PORT, '0.0.0.0', () => {
 // -------------------------------------------------------------
 const AUTHOR_ID = '1488322044335755294'; // 作者のDiscordユーザーID
 
-// 絵文字の表示崩れを防ぐため標準絵文字に設定
+// 絵文字設定
 const EMOJI_LOADING = '<a:loading:1548168752917647421>';
 const EMOJI_ERROR = '<a:error:1545303132358311997>';
 const EMOJI_INFO = '<:info:1545303757796024330>';
@@ -53,6 +53,14 @@ const client = new Client({
     GatewayIntentBits.GuildPresences,
   ],
 });
+
+// 不適切ワードチェック（簡易フィルター）
+const NSFW_KEYWORDS = ['nude', 'nsfw', 'naked', 'porn', 'sex', 'explicit', 'gore', 'r18', 'エロ', '裸', '無修正', '水着', '18禁'];
+
+function containsNSFW(text) {
+  const lower = text.toLowerCase();
+  return NSFW_KEYWORDS.some(word => lower.includes(word));
+}
 
 // 会話記憶・ステータス・モード管理用変数
 const serverHistories = new Map();
@@ -217,10 +225,10 @@ async function createInfoEmbed(guild) {
     .setTimestamp();
 }
 
-async function generateContentWithRetry(ai, params, retries = 2, delay = 2000) {
+async function generateContentWithRetry(aiInstance, params, retries = 2, delay = 2000) {
   for (let i = 0; i <= retries; i++) {
     try {
-      return await ai.models.generateContent(params);
+      return await aiInstance.models.generateContent(params);
     } catch (err) {
       const errStr = String(err.message || err);
       if ((errStr.includes('503') || errStr.includes('UNAVAILABLE')) && i < retries) {
@@ -246,7 +254,6 @@ client.once('clientReady', async () => {
       new SlashCommandBuilder().setName('bot-question').setDescription('開発者へ質問や提案を送信します'),
       new SlashCommandBuilder().setName('bot-questionnaire').setDescription('Botのアンケートに回答します'),
       
-      // モード変更コマンド
       new SlashCommandBuilder()
         .setName('bot-mode')
         .setDescription('AIの喋り方モードを変更します')
@@ -264,7 +271,6 @@ client.once('clientReady', async () => {
             )
         ),
 
-      // 画像生成コマンド
       new SlashCommandBuilder()
         .setName('bot-image-create')
         .setDescription('キーワードや説明文から画像を生成します')
@@ -292,7 +298,6 @@ client.on('guildCreate', async (guild) => {
   updateBotStatus();
 
   try {
-    // 監査ログからBotを追加したユーザー（管理者）を取得
     const auditLogs = await guild.fetchAuditLogs({
       type: AuditLogEvent.BotAdd,
       limit: 1,
@@ -306,13 +311,11 @@ client.on('guildCreate', async (guild) => {
       }
     }
 
-    // 監査ログから取得できない場合はサーバーオーナーを対象にする
     if (!inviter) {
       const owner = await guild.fetchOwner().catch(() => null);
       if (owner) inviter = owner.user;
     }
 
-    // 指定のウェルカムメッセージをDM送信
     if (inviter) {
       const welcomeMessage = 
 `# サーバーにAIBOTを入れていただき、ありがとうございます！
@@ -343,7 +346,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-info コマンド ---
     if (interaction.commandName === 'bot-info') {
       const guildId = interaction.guildId || `dm_${interaction.user.id}`;
 
@@ -384,7 +386,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // --- /bot-mode ---
     if (interaction.commandName === 'bot-mode') {
       const selectedCategory = interaction.options.getString('category');
       const contextKey = interaction.guildId ? `guild_${interaction.guildId}` : `dm_${interaction.user.id}`;
@@ -398,20 +399,30 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-   // --- /bot-image-create ---
+    // --- /bot-image-create ---
     if (interaction.commandName === 'bot-image-create') {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
 
+      // 不適切ワード判定
+      if (containsNSFW(description)) {
+        await interaction.editReply({
+          content: `${EMOJI_ERROR} **不適切なコンテンツが検知されました**\n安全ポリシーに基づき、不適切なコンテンツを含む画像の生成はできません。`
+        });
+        return;
+      }
+
       try {
         let finalPrompt = description;
 
-        // 1. Geminiで英語化（失敗したら元の日本語を使用）
+        // Geminiで英語化（セーフ機能付きプロンプト化）
         try {
-          const translatePrompt = `Translate and expand the following description into a concise English image generation prompt (max 30 words, single line, no quotes, no markdown): "${description}"`;
-          const genModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-          const translationResult = await genModel.generateContent(translatePrompt);
-          const translatedText = translationResult.response.text().trim();
+          const translatePrompt = `Translate and expand the following description into a safe, family-friendly concise English image generation prompt (max 30 words, single line, no quotes, no markdown, safe for work only): "${description}"`;
+          const translationResult = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: translatePrompt,
+          });
+          const translatedText = translationResult.text ? translationResult.text.trim() : '';
 
           if (translatedText) {
             finalPrompt = translatedText.replace(/[\r\n"']/g, ' ');
@@ -420,22 +431,19 @@ client.on('interactionCreate', async (interaction) => {
           console.warn('⚠️ [IMAGE GEN] Translation fallback:', translationErr);
         }
 
-        // 2. URLの生成（botでfetchせず、Discordに直接画像を描画させる）
+        // safe=true を付与してセーフモード強制
         const encodedPrompt = encodeURIComponent(finalPrompt);
         const seed = Math.floor(Math.random() * 1000000);
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true`;
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true&safe=true`;
 
-        // 3. Embedを作成して直接URLを設定
         const embed = new EmbedBuilder()
           .setTitle('🎨 画像生成結果')
           .setDescription(`**入力:** ${description}\n**最適化プロンプト:** \`${finalPrompt}\``)
-          .setImage(imageUrl) // URLを直接指定してDiscord側に読み込ませる
+          .setImage(imageUrl)
           .setColor('#00ffcc')
-          .setFooter({ text: 'Powered by Pollinations.ai' });
+          .setFooter({ text: 'Powered by Pollinations.ai (Safe Mode)' });
 
-        await interaction.editReply({
-          embeds: [embed]
-        });
+        await interaction.editReply({ embeds: [embed] });
 
       } catch (err) {
         console.error('❌ [IMAGE GENERATION ERROR]:', err);
@@ -573,24 +581,64 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // -------------------------------------------------------------
-// 6. 通常メッセージ処理（管理パネル・会話）
+// 6. 通常メッセージ処理（管理パネル・一斉送信・会話）
 // -------------------------------------------------------------
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const contentTrimmed = message.content.trim();
 
-  // A. 管理者専用 管理パネル機能 (Admin Panel)
+  // A. 管理者専用 管理パネル機能 (Admin Panel & 一斉送信)
   if (contentTrimmed.startsWith('!AI ')) {
-    const args = contentTrimmed.slice(4).trim().split(/\s+/);
-    const subCommand = args[0] ? args[0].toLowerCase() : '';
-
     if (message.author.id !== AUTHOR_ID) {
       await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
       return;
     }
 
     totalCommandCount++;
+
+    // 一斉送信コマンド ( !AI Send / !AI All Send ) の表示修正
+    const isAllSend = contentTrimmed.toLowerCase().startsWith('!ai all send');
+    const isSend = contentTrimmed.toLowerCase().startsWith('!ai send');
+
+    if (isAllSend || isSend) {
+      const prefixLength = isAllSend ? '!AI All Send'.length : '!AI Send'.length;
+      const sendText = contentTrimmed.slice(prefixLength).trim();
+
+      if (!sendText) {
+        await message.reply('⚠️ 送信するメッセージを入力してください。').catch(console.error);
+        return;
+      }
+
+      // 送信用Embed（タイトルを固定し、本文に文章と改行を配置）
+      const announcementEmbed = new EmbedBuilder()
+        .setTitle('📢 AIBOT からのお知らせ')
+        .setDescription(sendText)
+        .setColor('#00ffcc')
+        .setFooter({ text: `送信者: ${message.author.tag}`, iconURL: message.author.displayAvatarURL() })
+        .setTimestamp();
+
+      if (isAllSend) {
+        let successCount = 0;
+        for (const guild of client.guilds.cache.values()) {
+          if (guild.id === EXCLUDED_GUILD_ID) continue;
+
+          const targetCh = await getDefaultChannel(guild);
+          if (targetCh) {
+            await targetCh.send({ embeds: [announcementEmbed] }).catch(() => null);
+            successCount++;
+          }
+        }
+        await message.reply(`📢 ${successCount} 個のサーバーにお知らせを一斉送信しました！`).catch(console.error);
+      } else {
+        await message.channel.send({ embeds: [announcementEmbed] }).catch(console.error);
+        await message.delete().catch(() => null);
+      }
+      return;
+    }
+
+    const args = contentTrimmed.slice(4).trim().split(/\s+/);
+    const subCommand = args[0] ? args[0].toLowerCase() : '';
 
     if (subCommand === 'adminpanel') {
       adminState = 'panel';
