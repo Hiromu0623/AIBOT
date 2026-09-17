@@ -221,7 +221,7 @@ async function createInfoEmbed(guild) {
       { name: '⚠️ APIエラー (429等)', value: `\`${apiErrorCount}\` 回`, inline: true },
       { name: '📋 導入サーバー一覧', value: guildNames.length > 1024 ? guildNames.slice(0, 1000) + '...' : guildNames }
     )
-    .setFooter({ text: '🔄 10秒ごとにリアルタイム更新中' })
+    .setFooter({ text: '🔄 10秒ごとにリアルタイム更新中（5分間）' })
     .setTimestamp();
 }
 
@@ -352,14 +352,6 @@ client.on('interactionCreate', async (interaction) => {
       if (activeInfoMessages.has(guildId)) {
         const oldData = activeInfoMessages.get(guildId);
         clearInterval(oldData.intervalId);
-
-        try {
-          const oldChannel = await client.channels.fetch(oldData.channelId);
-          if (oldChannel) {
-            const oldMsg = await oldChannel.messages.fetch(oldData.messageId);
-            if (oldMsg) await oldMsg.delete();
-          }
-        } catch (e) {}
       }
 
       await interaction.deferReply();
@@ -367,7 +359,34 @@ client.on('interactionCreate', async (interaction) => {
       const replyMsg = await interaction.editReply({ embeds: [initialEmbed] }).catch(console.error);
 
       if (replyMsg) {
+        let elapsedTime = 0;
+        const timeoutLimit = 300000; // 5分間 (300,000ms)
+
         const intervalId = setInterval(async () => {
+          elapsedTime += 10000;
+
+          // 5分経過したら自動更新を打ち切り「🔄 更新」ボタンを表示
+          if (elapsedTime >= timeoutLimit) {
+            clearInterval(intervalId);
+            activeInfoMessages.delete(guildId);
+
+            const timeoutEmbed = EmbedBuilder.from(await createInfoEmbed(interaction.guild))
+              .setFooter({ text: '⏹️ 自動更新が終了しました。「更新」ボタンを押すと最新情報になります。' });
+
+            const refreshBtn = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId('refresh_bot_info')
+                .setLabel('🔄 更新')
+                .setStyle(ButtonStyle.Primary)
+            );
+
+            await interaction.editReply({
+              embeds: [timeoutEmbed],
+              components: [refreshBtn],
+            }).catch(() => {});
+            return;
+          }
+
           try {
             const updatedEmbed = await createInfoEmbed(interaction.guild);
             await interaction.editReply({ embeds: [updatedEmbed] });
@@ -481,6 +500,27 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    // 🔄 Bot-Info の更新ボタン押下時の処理
+    if (interaction.customId === 'refresh_bot_info') {
+      await interaction.deferUpdate();
+
+      const updatedEmbed = EmbedBuilder.from(await createInfoEmbed(interaction.guild))
+        .setFooter({ text: '⏹️ 自動更新が終了しました。「更新」ボタンを押すと最新情報になります。' });
+
+      const refreshBtn = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('refresh_bot_info')
+          .setLabel('🔄 更新')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.editReply({
+        embeds: [updatedEmbed],
+        components: [refreshBtn],
+      }).catch(console.error);
+      return;
+    }
+
     if (interaction.customId.startsWith('reply_to_user_')) {
       const targetUserId = interaction.customId.replace('reply_to_user_', '');
 
@@ -969,11 +1009,18 @@ client.on('messageCreate', async (message) => {
 
     const userParts = [];
 
+    // ① テキストパートを先頭に設定
+    if (textContent) {
+      userParts.push({ text: textContent });
+    }
+
+    // ② 添付ファイル（テキスト/画像）の読み込み
     if (message.attachments.size > 0) {
       for (const [_, attachment] of message.attachments) {
         try {
           const response = await fetch(attachment.url);
-          const mimeType = attachment.contentType || '';
+          const rawMimeType = attachment.contentType || '';
+          const mimeType = rawMimeType.split(';')[0].trim(); // MIMEタイプからパラメータを除外
 
           if (
             mimeType.includes('text') ||
@@ -984,14 +1031,14 @@ client.on('messageCreate', async (message) => {
             attachment.name.endsWith('.json')
           ) {
             const fileText = await response.text();
-            textContent += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
-          } else {
+            userParts[0].text += `\n\n--- 添付ファイル (${attachment.name}) ---\n${fileText}`;
+          } else if (mimeType.startsWith('image/')) {
             const arrayBuffer = await response.arrayBuffer();
             const base64Data = Buffer.from(arrayBuffer).toString('base64');
 
             userParts.push({
               inlineData: {
-                mimeType: mimeType.startsWith('image/') ? mimeType : 'image/jpeg',
+                mimeType: mimeType,
                 data: base64Data,
               },
             });
@@ -1001,8 +1048,6 @@ client.on('messageCreate', async (message) => {
         }
       }
     }
-
-    userParts.push({ text: textContent });
 
     history.push({
       role: 'user',
