@@ -70,6 +70,8 @@ const MAX_HISTORY = 5;
 const requestTimestamps = [];
 const GEMINI_RPM_LIMIT = 15;
 
+let isProcessing = false;
+
 // エラーカウント用変数
 let apiErrorCount = 0;
 let congestionErrorCount = 0;
@@ -142,7 +144,7 @@ function updateBotStatus() {
   const serverCount = client.guilds.cache.size;
   const remainingRequests = Math.max(0, GEMINI_RPM_LIMIT - requestTimestamps.length);
 
-  const statusText = `導入サーバー数 : ${serverCount} \vert{} 残り回答制限数 : ${remainingRequests}`;
+  const statusText = `導入サーバー数 : ${serverCount} | 残り回答制限数 : ${remainingRequests}`;
   client.user.setActivity(statusText, { type: ActivityType.Custom });
 }
 
@@ -221,6 +223,21 @@ async function createInfoEmbed(guild) {
     )
     .setFooter({ text: '🔄 10秒ごとにリアルタイム更新中（5分間）' })
     .setTimestamp();
+}
+
+async function generateContentWithRetry(aiInstance, params, retries = 2, delay = 2000) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await aiInstance.models.generateContent(params);
+    } catch (err) {
+      const errStr = String(err.message || err);
+      if ((errStr.includes('503') || errStr.includes('UNAVAILABLE')) && i < retries) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 // -------------------------------------------------------------
@@ -348,6 +365,7 @@ client.on('interactionCreate', async (interaction) => {
         const intervalId = setInterval(async () => {
           elapsedTime += 10000;
 
+          // 5分経過したら自動更新を打ち切り「🔄 更新」ボタンを表示
           if (elapsedTime >= timeoutLimit) {
             clearInterval(intervalId);
             activeInfoMessages.delete(guildId);
@@ -400,10 +418,12 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // --- /bot-image-create ---
     if (interaction.commandName === 'bot-image-create') {
       await interaction.deferReply();
       const description = interaction.options.getString('description');
 
+      // 不適切ワード判定
       if (containsNSFW(description)) {
         await interaction.editReply({
           content: `${EMOJI_ERROR} **不適切なコンテンツが検知されました**\n安全ポリシーに基づき、不適切なコンテンツを含む画像の生成はできません。`
@@ -414,6 +434,7 @@ client.on('interactionCreate', async (interaction) => {
       try {
         let finalPrompt = description;
 
+        // Geminiで英語化（セーフ機能付きプロンプト化）
         try {
           const translatePrompt = `Translate and expand the following description into a safe, family-friendly concise English image generation prompt (max 30 words, single line, no quotes, no markdown, safe for work only): "${description}"`;
           const translationResult = await ai.models.generateContent({
@@ -429,6 +450,7 @@ client.on('interactionCreate', async (interaction) => {
           console.warn('⚠️ [IMAGE GEN] Translation fallback:', translationErr);
         }
 
+        // safe=true を付与してセーフモード強制
         const encodedPrompt = encodeURIComponent(finalPrompt);
         const seed = Math.floor(Math.random() * 1000000);
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?seed=${seed}&width=1024&height=1024&nologo=true&safe=true`;
@@ -478,6 +500,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (interaction.isButton()) {
+    // 🔄 Bot-Info の更新ボタン押下時の処理
     if (interaction.customId === 'refresh_bot_info') {
       await interaction.deferUpdate();
 
@@ -614,6 +637,7 @@ client.on('messageCreate', async (message) => {
 
     totalCommandCount++;
 
+    // 一斉送信コマンド ( !AI Send / !AI All Send ) の表示修正
     const isAllSend = contentTrimmed.toLowerCase().startsWith('!ai all send');
     const isSend = contentTrimmed.toLowerCase().startsWith('!ai send');
 
@@ -626,6 +650,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // 送信用Embed（タイトルを固定し、本文に文章と改行を配置）
       const announcementEmbed = new EmbedBuilder()
         .setTitle('📢 AIBOT からのお知らせ')
         .setDescription(sendText)
@@ -884,7 +909,7 @@ client.on('messageCreate', async (message) => {
           history.forEach(item => {
             const role = item.role === 'user' ? 'ユーザー' : 'Bot';
             const textPart = item.parts.map(p => p.text || '[メディア/添付ファイル]').join(' ');
-            rawConversations += `${role}:${textPart}\n`;
+            rawConversations += `${role}: ${textPart}\n`;
           });
         }
       }
@@ -905,8 +930,8 @@ client.on('messageCreate', async (message) => {
 
       const infoText = 
         `**Ping** : ${ping}\n` +
-        `**Rest** : ${remainingRequests} /${GEMINI_RPM_LIMIT}\n` +
-        `**Error** : ${totalErrors} 回 (429: ${apiErrorCount} / 503:${congestionErrorCount})\n` +
+        `**Rest** : ${remainingRequests} / ${GEMINI_RPM_LIMIT}\n` +
+        `**Error** : ${totalErrors} 回 (429: ${apiErrorCount} / 503: ${congestionErrorCount})\n` +
         `**Operating time** : ${uptimeStr}\n` +
         `**Command count** : ${totalCommandCount} 回\n\n` +
         `**AI information** :\n${aiSummary}`;
@@ -923,7 +948,7 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // B. 通常会話処理（ストリーミング生成）
+  // B. 通常会話処理
   const prompt = message.content.replace(/<@[!&]?\d+>/g, '').replace(/<#\d+>/g, '').trim();
 
   if (prompt.toLowerCase() === 'help' || prompt === 'ヘルプ') {
@@ -950,10 +975,17 @@ client.on('messageCreate', async (message) => {
 
   totalCommandCount++;
 
+  if (isProcessing) {
+    await message.reply(`${EMOJI_LOADING} 現在、他の質問を処理中だよ！順番に話しかけてね。`).catch(console.error);
+    return;
+  }
+
   const contextKey = message.guild ? `guild_${message.guild.id}` : `dm_${message.author.id}`;
   let loadingMsg = null;
 
   try {
+    isProcessing = true;
+
     if (prompt === 'リセット' || prompt === 'forget') {
       serverHistories.delete(contextKey);
       await message.reply('🧠 このサーバーでの会話の記憶をリセットしました！').catch(console.error);
@@ -965,7 +997,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    loadingMsg = await message.reply(`${EMOJI_LOADING} 考え中...`).catch(console.error);
+    loadingMsg = await message.reply(`${EMOJI_LOADING} 回答を待機中...`).catch(console.error);
 
     if (!serverHistories.has(contextKey)) {
       serverHistories.set(contextKey, []);
@@ -977,16 +1009,18 @@ client.on('messageCreate', async (message) => {
 
     const userParts = [];
 
+    // ① テキストパートを先頭に設定
     if (textContent) {
       userParts.push({ text: textContent });
     }
 
+    // ② 添付ファイル（テキスト/画像）の読み込み
     if (message.attachments.size > 0) {
       for (const [_, attachment] of message.attachments) {
         try {
           const response = await fetch(attachment.url);
           const rawMimeType = attachment.contentType || '';
-          const mimeType = rawMimeType.split(';')[0].trim();
+          const mimeType = rawMimeType.split(';')[0].trim(); // MIMEタイプからパラメータを除外
 
           if (
             mimeType.includes('text') ||
@@ -1034,30 +1068,13 @@ client.on('messageCreate', async (message) => {
       configOptions.systemInstruction = currentModePrompt;
     }
 
-    // ストリーミングAPIの呼び出し
-    const responseStream = await ai.models.generateContentStream({
+    const response = await generateContentWithRetry(ai, {
       model: 'gemini-2.5-flash',
       contents: history,
       config: configOptions,
     });
 
-    let fullText = '';
-    let lastEditTime = Date.now();
-
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        fullText += chunk.text;
-
-        // Rate Limit（Discordの送信負荷）を考慮し、1.5秒ごとに表示を更新
-        if (Date.now() - lastEditTime > 1500 && fullText.trim().length > 0) {
-          const previewText = fullText.length > 1900 ? fullText.slice(0, 1900) + '...' : fullText;
-          await loadingMsg.edit(`${previewText}\n\n${EMOJI_LOADING} *生成中...*`).catch(() => {});
-          lastEditTime = Date.now();
-        }
-      }
-    }
-
-    const replyText = fullText || '（返答を取得できませんでした）';
+    const replyText = response.text || '（返答を取得できませんでした）';
 
     history.push({
       role: 'model',
@@ -1068,11 +1085,12 @@ client.on('messageCreate', async (message) => {
       history.splice(0, history.length - (MAX_HISTORY * 2));
     }
 
-    // 生成完了時の最終出力
     if (replyText.length > 1900) {
       const chunks = replyText.match(/[\s\S]{1,1900}/g) || [replyText];
       if (loadingMsg) {
         await loadingMsg.edit(chunks[0]).catch(console.error);
+      } else {
+        await message.reply(chunks[0]).catch(console.error);
       }
       for (let i = 1; i < chunks.length; i++) {
         await message.channel.send(chunks[i]).catch(console.error);
@@ -1080,6 +1098,8 @@ client.on('messageCreate', async (message) => {
     } else {
       if (loadingMsg) {
         await loadingMsg.edit(replyText).catch(console.error);
+      } else {
+        await message.reply(replyText).catch(console.error);
       }
     }
 
@@ -1122,6 +1142,9 @@ client.on('messageCreate', async (message) => {
 
     apiErrorCount++;
     await sendErrorReply(`${EMOJI_ERROR} **予期せぬエラーが発生しました**\n\`\`\`js\n${errorStr.slice(0, 1800)}\n\`\`\``);
+
+  } finally {
+    isProcessing = false;
   }
 });
 
