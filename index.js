@@ -153,7 +153,7 @@ function createHelpEmbed() {
     .setTitle('📖 AI Bot ヘルプ & 使い方ガイド')
     .setDescription('Gemini AIを搭載した高機能Botです！メンションや返信で話しかけてね。')
     .addFields(
-      { name: '💬 会話する', value: 'Bot宛てにメンション（@Bot）するか、メッセージに返信して話しかけてください。' },
+      { name: '💬 会話する', value: 'Bot宛てにメンション（@AIBot）するか、メッセージに返信して話しかけてください。' },
       { name: '🎭 語尾・口調変更', value: '「`/bot-mode`」でAIの喋り方（ツンデレ、関西弁、ギャル等）を変更できます。' },
       { name: '🎨 画像生成', value: '「`/bot-image-create <説明>`」でプロンプトから画像を自動生成します。' },
       { name: '📁 画像・ファイル解析', value: '画像、動画、ソースコード(.js等)などの添付ファイルも読み取れます！' },
@@ -631,7 +631,7 @@ client.on('messageCreate', async (message) => {
   // A. 管理者専用 管理パネル機能 (Admin Panel & 一斉送信)
   if (contentTrimmed.startsWith('!AI ')) {
     if (message.author.id !== AUTHOR_ID) {
-      await message.reply('⚠️ このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
+      await message.reply('`${EMOJI_ERROR} このコマンドはBot開発者（管理者）のみ実行できます。').catch(console.error);
       return;
     }
 
@@ -976,7 +976,7 @@ client.on('messageCreate', async (message) => {
   totalCommandCount++;
 
   if (isProcessing) {
-    await message.reply(`${EMOJI_LOADING} 現在、他の質問を処理中だよ！順番に話しかけてね。`).catch(console.error);
+    await message.reply(`${EMOJI_LOADING} 現在、他の質問を処理中です。しばらくお待ちください。`).catch(console.error);
     return;
   }
 
